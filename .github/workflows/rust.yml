@@ -3,7 +3,7 @@ name: build-and-release
 on:
   push:
     tags:
-      - "v*.*.*"
+    - "v*.*.*"
 
 jobs:
   # Build .deb / .rpm inside a Debian 12 (bookworm) container so the produced
