@@ -3,7 +3,7 @@ name: build-and-release
 on:
   push:
     tags:
-    - "v*.*.*"
+      - "v*.*.*"
 
 jobs:
   # Build .deb / .rpm inside a Debian 12 (bookworm) container so the produced
@@ -14,7 +14,7 @@ jobs:
     name: Linux .deb/.rpm (Debian 12 compatible)
     runs-on: ubuntu-latest
     container:
-      image: debian:bookworm
+      image: rust:1-bookworm
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4
@@ -26,10 +26,7 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential pkg-config libssl-dev zlib1g-dev libutempter-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+          apt-get install -y build-essential pkg-config libssl-dev zlib1g-dev libutempter-dev binutils
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -74,7 +71,6 @@ jobs:
           tag: ${{ github.ref }}
           release_name: "coder v${{ env.RELEASE_VERSION }}"
           body: ${{ steps.git-cliff.outputs.content }}
-          repo_token: ${{ secrets.RELEASE_TOKEN }}
 
   # Plain binary tarballs/zips for every major OS/arch.
   binaries:
@@ -87,10 +83,9 @@ jobs:
           - OS: ubuntu-latest
             TOOLCHAIN: stable
             TARGET: x86_64-unknown-linux-gnu
-          - OS: ubuntu-latest
+          - OS: ubuntu-24.04-arm
             TOOLCHAIN: stable
             TARGET: aarch64-unknown-linux-gnu
-            EXTRA_DEPS: "gcc-aarch64-linux-gnu"
           - OS: windows-2022
             TOOLCHAIN: stable
             TARGET: x86_64-pc-windows-msvc
@@ -115,16 +110,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev zlib1g-dev \
-            ${{ matrix.build.EXTRA_DEPS }}
-
-      - name: Configure cross C linker (Linux aarch64)
-        if: matrix.build.TARGET == 'aarch64-unknown-linux-gnu'
-        shell: bash
-        run: |
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          sudo apt-get install -y pkg-config libssl-dev zlib1g-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -168,7 +154,6 @@ jobs:
           overwrite: true
           tag: ${{ github.ref }}
           release_name: "coder v${{ env.RELEASE_VERSION }}"
-          repo_token: ${{ secrets.RELEASE_TOKEN }}
 
   # Best-effort static musl build for Alpine and very old-glibc distros.
   # continue-on-error: openssl-sys + arboard/x11rb cross-compilation to musl is
@@ -225,4 +210,3 @@ jobs:
           overwrite: true
           tag: ${{ github.ref }}
           release_name: "coder v${{ env.RELEASE_VERSION }}"
-          repo_token: ${{ secrets.RELEASE_TOKEN }}
