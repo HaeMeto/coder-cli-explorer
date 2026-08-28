@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Coder
+GenericName=Text Editor
+Comment=Lightweight Terminal IDE like VSCode
+Exec=coder %f
+Icon=coder
+Terminal=true
+Categories=Development;IDE;TextEditor;Utility;
+Keywords=editor;code;ide;text;programming;developer;terminal;
+StartupNotify=false
+MimeType=text/plain;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-python;text/x-java;text/x-shellscript;text/markdown;text/html;text/css;text/xml;application/json;application/javascript;application/x-yaml;application/toml;application/x-rust;text/rust;text/x-go;
