@@ -46,25 +46,30 @@ pub fn set_system(text: &str) {
 // oversized copy is rare and better dropped than corrupting the terminal.
 const OSC52_MAX_BYTES: usize = 1 << 20; // 1 MiB
 
-/// Emits an OSC-52 clipboard sequence on stdout so the *local* terminal
-/// emulator writes `text` to its own clipboard (bypassing any remote SSH host
-/// that has no display). Written atomically with a single flush; call only from
-/// the main thread so it never races the TUI's own stdout writes.
-pub fn emit_osc52(text: &str) {
+/// Builds and writes the whole OSC-52 sequence (`ESC ] 52 ; c ; <base64> ESC \\`)
+/// into `out` in a single `write_all`. Split out so tests can capture the exact
+/// bytes without touching the process's real stdout.
+fn emit_osc52_to<W: std::io::Write>(text: &str, mut out: W) {
  if text.is_empty() || text.len() > OSC52_MAX_BYTES {
  return;
  }
- use std::io::Write;
  // 4 output chars per 3 input bytes, rounded up, plus the wrapping fence.
  let mut buf = String::with_capacity(text.len().div_ceil(3) * 4 + 8);
  buf.push_str("\x1b]52;c;");
  buf.push_str(&base64(text.as_bytes()));
  buf.push_str("\x1b\\");
- let _ = std::io::stdout().flush().and_then(|_| {
+ let _ = out.write_all(buf.as_bytes());
+}
+
+/// Emits an OSC-52 clipboard sequence on stdout so the *local* terminal
+/// emulator writes `text` to its own clipboard (bypassing any remote SSH host
+/// that has no display). Written atomically with a single flush; call only from
+/// the main thread so it never races the TUI's own stdout writes.
+pub fn emit_osc52(text: &str) {
+ use std::io::Write;
  let mut out = std::io::stdout().lock();
- out.write_all(buf.as_bytes())?;
- out.flush()
- });
+ emit_osc52_to(text, &mut out);
+ let _ = out.flush();
 }
 
 /// Reads text from the native system clipboard, or an empty string if
@@ -115,7 +120,7 @@ fn base64(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
- use super::base64;
+ use super::{base64, emit_osc52_to};
 
  #[test]
  fn base64_encodes_rfc4648_vectors() {
@@ -126,5 +131,15 @@ mod tests {
  assert_eq!(base64(b"foob"), "Zm9vYg==");
  assert_eq!(base64(b"fooba"), "Zm9vYmE=");
  assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+ }
+
+ #[test]
+ fn osc52_sequence_wraps_base64() {
+ // Capture the exact bytes instead of touching the real stdout.
+ let mut out = Vec::new();
+ emit_osc52_to("hi", &mut out);
+ // \x1b]52;c; <base64("hi")="aGk="> \x1b\\
+ let expected = b"\x1b]52;c;aGk=\x1b\\";
+ assert_eq!(out, expected);
  }
 }
