@@ -263,6 +263,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // ----- In-editor find / replace (typing handled by the input widget) -----
         Action::OpenFind => open_find(model, false),
         Action::OpenFindReplace => open_find(model, true),
+ Action::OpenQuickbar => open_quickbar(model),
         Action::FindNext => {
             find_step(model, 1);
             Vec::new()

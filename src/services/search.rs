@@ -93,6 +93,19 @@ pub fn search(
     results
 }
 
+
+/// Enumerates every workspace file under `root` (honoring ignore rules:
+/// hidden dot-files and `.gitignore`d paths are skipped), returning absolute
+/// paths. Used to build the quickbar's "search file" list. Blocking; call
+/// inside `spawn_blocking`.
+pub fn list_files(root: &Path) -> Vec<PathBuf> {
+ walker(root, false)
+ .flatten()
+ .map(|e| e.path().to_path_buf())
+ .filter(|p| p.is_file())
+ .collect()
+}
+
 /// Replaces `query` matches with `replace` on a single 1-based line of `path`
 /// (the line a search result points at). Only that line is touched; matches on
 /// other lines are left alone. Returns the number of replacements (0 if none).

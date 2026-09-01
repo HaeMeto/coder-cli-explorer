@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use crate::app::cmd::Cmd;
 use crate::app::model::{
     ContextMenu, Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, GitZone, MenuItem,
-    Model, Panel, SearchField, Tab,
+    Model, Panel, QuickbarItem, QuickbarState, SearchField, Tab,
 };
 use crate::app::msg::Msg;
 use crate::core::buffer::{Buffer, Cursor};
@@ -28,6 +28,7 @@ mod git;
 mod lsp;
 mod menu;
 mod mouse;
+mod quickbar;
 mod search;
 mod sidebar_nav;
 mod tabs;
@@ -36,6 +37,7 @@ mod terminal;
 use action::apply_action;
 use dialog::{dialog_key, dialog_mouse};
 use menu::{menu_key, menu_mouse, open_file_menu};
+use quickbar::{files_listed, open_quickbar, quickbar_key, quickbar_mouse};
 use editor::*;
 use find::*;
 use git::*;
@@ -66,6 +68,11 @@ pub fn tick(model: &mut Model) -> Vec<Cmd> {
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
         Msg::Key(key) => {
+ // The quickbar (command palette) is the topmost overlay: it captures
+ // every key while open.
+ if model.quickbar.is_some() {
+ return quickbar_key(model, key);
+ }
             // If a modal dialog is open it captures all keyboard input.
             if model.dialog.is_some() {
                 return dialog_key(model, key);
@@ -102,6 +109,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             Vec::new()
         }
         Msg::Mouse(m) => {
+ if model.quickbar.is_some() {
+ return quickbar_mouse(model, m);
+ }
             if model.dialog.is_some() {
                 return dialog_mouse(model, m);
             }
@@ -382,6 +392,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             Vec::new()
         }
+ Msg::FilesListed { paths } => files_listed(model, paths),
         Msg::ReplaceDone { changed, count } => {
             // Reload buffers that are open and changed on disk.
             for path in &changed {

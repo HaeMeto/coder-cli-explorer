@@ -48,6 +48,10 @@ pub enum Cmd {
     GitFetch,
     GitPull,
     GitPush,
+
+ /// Enumerate every workspace file for the quickbar's "search file" list.
+ /// Result -> `Msg::FilesListed`.
+ ListFiles,
     RunSearch {
         query: String,
         use_regex: bool,
@@ -469,6 +473,13 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 send_git_status(&root, &tx);
             });
         }
+ Cmd::ListFiles => {
+ let root = root.clone();
+ tokio::task::spawn_blocking(move || {
+ let paths = services::search::list_files(&root);
+ let _ = tx.send(Msg::FilesListed { paths });
+ });
+ }
         Cmd::RunSearch {
             query,
             use_regex,

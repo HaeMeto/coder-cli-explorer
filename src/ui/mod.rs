@@ -4,6 +4,7 @@ pub mod activity_bar;
 pub mod completion;
 pub mod context_menu;
 pub mod dialog;
+pub mod quickbar;
 pub mod editor;
 pub mod find;
 pub mod sidebar;
@@ -151,6 +152,11 @@ pub fn view(frame: &mut Frame, model: &Model) {
     if model.dialog.is_some() {
         dialog::render(frame, model);
     }
+ 
+ // Quickbar is the topmost overlay (above even the dialog).
+ if model.quickbar.is_some() {
+ quickbar::render(frame, model);
+ }
 
     // Toast floats bottom-center over everything.
     toast::render(frame, area, model);

@@ -67,6 +67,9 @@ pub enum Action {
     // In-editor find / replace widget (text editing handled by the input widget)
     OpenFind,
     OpenFindReplace,
+
+ // Command palette / quickbar overlay
+ OpenQuickbar,
     FindNext,
     FindPrev,
     FindToggleField,

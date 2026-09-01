@@ -40,6 +40,7 @@ pub enum Bindable {
     Find,
     Replace,
     Shortcuts,
+ Quickbar,
     Explorer,
     Search,
     Git,
@@ -96,7 +97,7 @@ impl Scope {
 
 impl Bindable {
     /// Every command, in file order (also the TOML write order).
-    const ALL: [Bindable; 30] = [
+    const ALL: [Bindable; 31] = [
         Bindable::Quit,
         Bindable::ToggleSidebar,
         Bindable::ToggleTerminal,
@@ -107,6 +108,7 @@ impl Bindable {
         Bindable::Find,
         Bindable::Replace,
         Bindable::Shortcuts,
+ Bindable::Quickbar,
         Bindable::Explorer,
         Bindable::Search,
         Bindable::Git,
@@ -142,6 +144,7 @@ impl Bindable {
             Bindable::Find => "find",
             Bindable::Replace => "replace",
             Bindable::Shortcuts => "shortcuts",
+ Bindable::Quickbar => "quickbar",
             Bindable::Explorer => "explorer",
             Bindable::Search => "search",
             Bindable::Git => "git",
@@ -196,6 +199,7 @@ impl Bindable {
             Bindable::Find => "ctrl+f",
             Bindable::Replace => "ctrl+h",
             Bindable::Shortcuts => "alt+7",
+ Bindable::Quickbar => "ctrl+p",
             // Panels use Alt+digit: legacy terminals (GNOME Terminal / VTE) can't
             // send Ctrl+Shift+<letter> distinctly — the Shift bit collapses so
             // e.g. Ctrl+Shift+S is byte-identical to Ctrl+S (Save). Alt+digit
@@ -236,6 +240,7 @@ impl Bindable {
             Bindable::Find => Action::OpenFind,
             Bindable::Replace => Action::OpenFindReplace,
             Bindable::Shortcuts => Action::ShowShortcuts,
+ Bindable::Quickbar => Action::OpenQuickbar,
             Bindable::Explorer => Action::SelectPanel(Panel::Files),
             Bindable::Search => Action::SelectPanel(Panel::Search),
             Bindable::Git => Action::SelectPanel(Panel::Git),

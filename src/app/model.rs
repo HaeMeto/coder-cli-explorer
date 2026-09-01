@@ -692,6 +692,84 @@ pub struct Diagnostic {
     pub message: String,
 }
 
+
+/// A selectable entry in the quickbar (command palette), opened with Ctrl+P.
+/// Entries mix workspace files, workspace directories, and built-in commands.
+#[derive(Clone)]
+pub enum QuickbarItem {
+ /// Open this file in the editor. `rel` is the workspace-relative path used
+ /// for display and prefix filtering (what the user sees and types against).
+ File { path: PathBuf, rel: String },
+ /// Reveal / expand this directory in the file sidebar. (Kept ready for a
+ /// future "open folder" entry; the workspace file scan only returns files.)
+ #[allow(dead_code)]
+ Dir { path: PathBuf, rel: String },
+ /// Create a new file inside the workspace root (opens the name dialog).
+ NewFile,
+ /// Create a new folder inside the workspace root (opens the name dialog).
+ NewFolder,
+ /// Open the given sidebar panel.
+ Panel(Panel),
+}
+
+impl QuickbarItem {
+ /// A one-char marker rendered before each entry so its kind is clear at a
+ /// glance: file, directory, new-entry, or command.
+ pub fn marker(&self) -> char {
+ match self {
+ QuickbarItem::File { .. } => 'F',
+ QuickbarItem::Dir { .. } => 'D',
+ QuickbarItem::NewFile => '+',
+ QuickbarItem::NewFolder => '+',
+ QuickbarItem::Panel(_) => '>',
+ }
+ }
+
+ /// The label shown for the entry. For files/dirs this is the workspace-
+ /// relative path; for commands a human title.
+ pub fn label(&self) -> String {
+ match self {
+ QuickbarItem::File { rel, .. } | QuickbarItem::Dir { rel, .. } => rel.clone(),
+ QuickbarItem::NewFile => "New File".into(),
+ QuickbarItem::NewFolder => "New Folder".into(),
+ QuickbarItem::Panel(p) => format!("Open panel: {}", p.title()),
+ }
+ }
+
+ /// The query text that selects this entry (what the filter matches).
+ pub fn filter_text(&self) -> String {
+ self.label().to_lowercase()
+ }
+}
+
+/// The quickbar overlay: an input query up top and a filtered list below.
+/// Sort/filter happens in `update` (never here); this is pure state.
+pub struct QuickbarState {
+ /// The query being typed; filtered against entry `filter_text`.
+ pub input: TextInputState,
+ /// Every workspace file (from `Msg::FilesListed`), used to build `items`.
+ pub files: Vec<PathBuf>,
+ /// Whether the async workspace file listing has been delivered.
+ pub files_loaded: bool,
+ /// Candidate entries (workspace files plus commands), freshly filtered to
+ /// the current query. This is what is rendered and traversed by ↑/↓/Enter.
+ pub items: Vec<QuickbarItem>,
+ /// Index of the highlighted row within `items`.
+ pub selected: usize,
+}
+
+impl QuickbarState {
+ pub fn new() -> Self {
+ QuickbarState {
+ input: TextInputState::default(),
+ files: Vec::new(),
+ files_loaded: false,
+ items: Vec::new(),
+ selected: 0,
+ }
+ }
+}
+
 pub struct Model {
     pub root: PathBuf,
     pub tabs: Vec<Tab>,
@@ -739,6 +817,9 @@ pub struct Model {
     pub dialog: Option<Dialog>,
     /// The open file-tree context menu (captures all input when present).
     pub context_menu: Option<ContextMenu>,
+ /// The open quickbar (command palette) overlay, if any. It captures all input
+ /// while present, like `Dialog`/`ContextMenu`.
+ pub quickbar: Option<QuickbarState>,
     /// Change-gutter markers for the active buffer, keyed by line index.
     pub active_git_marks: std::collections::HashMap<usize, GutterKind>,
     /// Which tab the current git-diff markers were computed for. The diff is
@@ -859,6 +940,7 @@ impl Model {
             pending_diff_scroll: None,
             dialog: None,
             context_menu: None,
+            quickbar: None,
             active_git_marks: std::collections::HashMap::new(),
             active_git_marks_tab: None,
             git_marks_dirty: false,
