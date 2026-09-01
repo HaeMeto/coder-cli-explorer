@@ -590,11 +590,21 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 }
             });
         }
-        Cmd::SetClipboard(text) => {
-            tokio::task::spawn_blocking(move || {
-                services::clipboard::set_text(text);
-            });
-        }
+ Cmd::SetClipboard(text) => {
+ // OSC-52 must be written on this (main) thread: stdout is owned by the
+ // crossterm TUI, and writing it from a background task could interleave
+ // bytes with a concurrent render. It asks the *local* terminal (through
+ // SSH / tmux / a remote that has no display) to copy into its own
+ // clipboard, which is what makes copy reach the user's Windows host.
+ services::clipboard::emit_osc52(&text);
+ // The native system clipboard (X11/Wayland) is a separate channel that
+ // only works on a local desktop; it may be slow (a wayland round-trip)
+ // so keep it off the render thread.
+ let text2 = text;
+ tokio::task::spawn_blocking(move || {
+ services::clipboard::set_system(&text2);
+ });
+ }
         Cmd::CheckTools(commands) => {
             tokio::task::spawn_blocking(move || {
                 let statuses = commands
