@@ -27,41 +27,50 @@ pub(super) fn files_listed(model: &mut Model, mut paths: Vec<PathBuf>) -> Vec<Cm
 
 /// Handles keyboard input while the quickbar is open. It captures every key.
 pub(super) fn quickbar_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
- let Some(qb) = model.quickbar.as_mut() else {
- return Vec::new();
- };
- use crate::core::text_input::InputOutcome::{Changed, Ignored, Moved};
- match qb.input.handle_key(key, false) {
- // Typing changes the query: re-filter the list live.
- Changed => {
- rebuild_items(model);
- Vec::new()
- }
- Moved => Vec::new(),
- // Keys the input ignores: list navigation / execute / close.
- Ignored => match key.code {
- KeyCode::Up => {
- let len = qb.items.len();
- if len > 0 {
- qb.selected = qb.selected.saturating_sub(1).min(len - 1);
- }
- Vec::new()
- }
- KeyCode::Down => {
- if !qb.items.is_empty() && qb.selected + 1 < qb.items.len() {
- qb.selected += 1;
- }
- Vec::new()
- }
- KeyCode::Enter => execute_selected(model),
- KeyCode::Esc => {
- model.quickbar = None;
- model.focus = Focus::Editor;
- Vec::new()
- }
- _ => Vec::new(),
- },
- }
+    let Some(qb) = model.quickbar.as_mut() else {
+        return Vec::new();
+    };
+    use crate::core::text_input::InputOutcome::{Changed, Ignored, Moved};
+    match qb.input.handle_key(key, false) {
+        // Typing changes the query: re-filter the list live.
+        Changed => {
+            rebuild_items(model);
+            Vec::new()
+        }
+        Moved => Vec::new(),
+        // Keys the input ignores: list navigation / execute / close, else the
+        // key falls through to global shortcuts (Ctrl+Q quit, Ctrl+B sidebar,
+        // Ctrl+W close tab, panel switches, ...) so quitting / navigating still
+        // works while the palette is open — Ctrl+Q must not be swallowed.
+        Ignored => match key.code {
+            KeyCode::Up => {
+                let len = qb.items.len();
+                if len > 0 {
+                    qb.selected = qb.selected.saturating_sub(1).min(len - 1);
+                }
+                Vec::new()
+            }
+            KeyCode::Down => {
+                if !qb.items.is_empty() && qb.selected + 1 < qb.items.len() {
+                    qb.selected += 1;
+                }
+                Vec::new()
+            }
+            KeyCode::Enter => execute_selected(model),
+            KeyCode::Esc => {
+                model.quickbar = None;
+                model.focus = Focus::Editor;
+                Vec::new()
+            }
+            // Anything else is a global shortcut: make sure it still works.
+            _ => {
+                if let Some(action) = model.keybindings.resolve(key, Focus::Editor) {
+                    return apply_action(model, action);
+                }
+                Vec::new()
+            }
+        },
+    }
 }
 
 /// Runs the currently highlighted quickbar entry and closes the palette.
@@ -78,23 +87,25 @@ fn execute_selected(model: &mut Model) -> Vec<Cmd> {
  model.focus = Focus::Editor;
  open_path(model, path)
  }
- QuickbarItem::Dir { path, .. } => reveal_dir(model, path),
+ QuickbarItem::OpenFolder => open_folder_dialog(model),
  QuickbarItem::NewFile => new_root_entry_dialog(model, false),
  QuickbarItem::NewFolder => new_root_entry_dialog(model, true),
  QuickbarItem::Panel(p) => select_panel(model, p),
  }
 }
 
-/// Reveals a directory in the file sidebar: switches focus to the explorer,
-/// expanding the folder (scanning it first if it is not loaded yet).
-fn reveal_dir(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
- model.layout.sidebar_open = true;
- model.sidebar.active = Panel::Files;
+/// VSCode "open folder": shows a dialog to pick a folder path (pre-filled with
+/// the current workspace root, editable). On confirm it switches the whole
+/// workspace to that folder.
+fn open_folder_dialog(model: &mut Model) -> Vec<Cmd> {
+ let current = model.root.to_string_lossy().into_owned();
  model.focus = Focus::Sidebar;
- if !model.sidebar.files.is_loaded(&path) {
- return vec![Cmd::ScanDir(path)];
- }
- model.sidebar.files.expand(&path);
+ model.dialog = Some(Dialog::input(
+ "Open Folder".to_string(),
+ "Folder path to open as the new workspace:".to_string(),
+ current,
+ DialogAction::OpenWorkspace,
+ ));
  Vec::new()
 }
 
@@ -109,8 +120,9 @@ fn rebuild_items(model: &mut Model) {
  let query = qb.input.content().trim().to_lowercase();
  let root = model.root.clone();
 
- // Startup template of commands: new entries plus the sidebar panels.
+ // Startup template of commands: open folder, new entries, plus the panels.
  let mut commands: Vec<QuickbarItem> = Vec::new();
+ commands.push(QuickbarItem::OpenFolder);
  commands.push(QuickbarItem::NewFile);
  commands.push(QuickbarItem::NewFolder);
  for p in Panel::ALL {

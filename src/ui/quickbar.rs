@@ -75,7 +75,7 @@ pub fn render(frame: &mut Frame, model: &Model) {
  format!(" {marker} "),
  Style::new().fg(if selected { fg } else { th.fg_dim }).bg(bg),
  ),
- Span::styled(format!("{label:<width$}", width = inner_w as usize - 3), Style::new().fg(fg).bg(bg)),
+ Span::styled(format!("{label:<width$}", width = inner_w.saturating_sub(3) as usize), Style::new().fg(fg).bg(bg)),
  ]));
  }
  if lines.is_empty() {

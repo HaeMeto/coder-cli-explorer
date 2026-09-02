@@ -75,6 +75,11 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
         }
         DialogAction::ResetKeybindings => reset_keybindings(model),
         DialogAction::ResetConfig => reset_config(model),
+DialogAction::OpenWorkspace => {
+ let root = PathBuf::from(d.input.content().trim());
+ model.open_folder(root.clone());
+ vec![Cmd::ScanDir(root), Cmd::LoadGitStatus]
+}
         DialogAction::None => Vec::new(),
     }
 }

@@ -426,6 +426,9 @@ pub enum DialogAction {
     ResetKeybindings,
     /// Overwrite `config.toml` with the seeded defaults.
     ResetConfig,
+ /// Switch the workspace root to the folder typed in the dialog (VSCode
+ /// "open folder").
+ OpenWorkspace,
 }
 
 /// Modal dialog opened in the center of the screen. Captures all input while open.
@@ -700,10 +703,9 @@ pub enum QuickbarItem {
  /// Open this file in the editor. `rel` is the workspace-relative path used
  /// for display and prefix filtering (what the user sees and types against).
  File { path: PathBuf, rel: String },
- /// Reveal / expand this directory in the file sidebar. (Kept ready for a
- /// future "open folder" entry; the workspace file scan only returns files.)
- #[allow(dead_code)]
- Dir { path: PathBuf, rel: String },
+ /// Open this folder as a new workspace root (VSCode "open folder"), switching
+ /// the file explorer, git panel and search to that directory.
+ OpenFolder,
  /// Create a new file inside the workspace root (opens the name dialog).
  NewFile,
  /// Create a new folder inside the workspace root (opens the name dialog).
@@ -718,7 +720,7 @@ impl QuickbarItem {
  pub fn marker(&self) -> char {
  match self {
  QuickbarItem::File { .. } => 'F',
- QuickbarItem::Dir { .. } => 'D',
+ QuickbarItem::OpenFolder => '>',
  QuickbarItem::NewFile => '+',
  QuickbarItem::NewFolder => '+',
  QuickbarItem::Panel(_) => '>',
@@ -729,7 +731,8 @@ impl QuickbarItem {
  /// relative path; for commands a human title.
  pub fn label(&self) -> String {
  match self {
- QuickbarItem::File { rel, .. } | QuickbarItem::Dir { rel, .. } => rel.clone(),
+ QuickbarItem::File { rel, .. } => rel.clone(),
+ QuickbarItem::OpenFolder => "Open Folder...".into(),
  QuickbarItem::NewFile => "New File".into(),
  QuickbarItem::NewFolder => "New Folder".into(),
  QuickbarItem::Panel(p) => format!("Open panel: {}", p.title()),
@@ -1071,7 +1074,7 @@ impl Model {
     /// Invalidates highlighting (content replaced externally, or theme changed):
     /// drops the shown colors so text falls back to plain until the worker — which
     /// is told to reset its cache — returns fresh ones.
-    pub fn invalidate_highlight(&mut self) {
+ pub fn invalidate_highlight(&mut self) {
         self.hl_reset = true;
         self.hl_sent = None;
         self.display_key = None;
@@ -1079,6 +1082,50 @@ impl Model {
         // External content replacement (reload / format) changes the git diff too.
         self.git_marks_dirty = true;
     }
+
+    /// VSCode "open folder": switch the whole workspace to `root`. The file
+ /// explorer, git panel and search state reset for the new root, and every
+ /// editor tab / LSP session is dropped, while user preferences (theme,
+ /// settings, keybindings) and the window layout survive. This is pure state
+ /// work — the caller must issue the rescan `Cmd`s afterwards.
+ pub fn open_folder(&mut self, root: PathBuf) {
+ self.root = root.clone();
+ // Keep `sidebar.settings`/`sidebar.themes` (preferences) but reset every
+ // root-dependent sub-panel.
+ self.sidebar.files = FileTree::new(root.clone());
+ self.sidebar.git = GitStatus::default();
+ self.sidebar.search = SearchState::default();
+ self.sidebar.settings_selected = 0;
+ self.sidebar.active = Panel::Files;
+
+ self.tabs = Vec::new();
+ self.active_tab = None;
+ self.find = FindState::default();
+ self.lsp = LspState::default();
+ self.diagnostics = std::collections::HashMap::new();
+ self.completion = None;
+ self.pending_format = None;
+
+ // Close any transient overlay / drag so it never references a stale root.
+ self.dialog = None;
+ self.context_menu = None;
+ self.quickbar = None;
+ self.drag = None;
+ self.pending_goto = None;
+ self.pending_diff = None;
+ self.pending_diff_scroll = None;
+
+ // Invalidate every cached render target.
+ self.invalidate_highlight();
+ self.active_git_marks = std::collections::HashMap::new();
+ self.active_git_marks_tab = None;
+ self.active_deleted = Vec::new();
+ self.autocomplete_at = None;
+ self.didchange_at = None;
+
+ self.focus = Focus::Sidebar;
+ self.layout.sidebar_open = true;
+ }
 
     /// Schedules a debounced autocomplete request ~400ms out, resetting the timer
     /// on every keystroke so the server is only asked once typing pauses.
