@@ -579,4 +579,32 @@ mod tests {
             Some(Action::Quit)
         ));
     }
+
+ #[test]
+ fn quickbar_binding_is_remappable() {
+ // The out-of-the-box chord opens the palette.
+ let default = Keybindings::default();
+ assert!(matches!(
+ default
+ .resolve(ev(KeyCode::Char('p'), KeyModifiers::CONTROL), Focus::Editor),
+ Some(Action::OpenQuickbar)
+ ));
+ // Declaring a different chord in the file overrides it, and the old
+ // chord stops working, so editing keybindings.toml re-binds the palette.
+ let remapped = parse("[global]\nquickbar = \"ctrl+k\"\n");
+ assert!(matches!(
+ remapped
+ .resolve(ev(KeyCode::Char('k'), KeyModifiers::CONTROL), Focus::Editor),
+ Some(Action::OpenQuickbar)
+ ));
+ assert!(remapped
+ .resolve(ev(KeyCode::Char('p'), KeyModifiers::CONTROL), Focus::Editor)
+ .is_none());
+ // Global scope resolves from the sidebar focus too (palette is open).
+ assert!(matches!(
+ remapped
+ .resolve(ev(KeyCode::Char('k'), KeyModifiers::CONTROL), Focus::Sidebar),
+ Some(Action::OpenQuickbar)
+ ));
+ }
 }
