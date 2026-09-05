@@ -35,9 +35,9 @@ mod tabs;
 mod terminal;
 
 use action::apply_action;
-use dialog::{dialog_key, dialog_mouse};
+use dialog::{dialog_key, dialog_mouse, dialog_paste};
 use menu::{menu_key, menu_mouse, open_file_menu};
-use quickbar::{files_listed, open_quickbar, quickbar_key, quickbar_mouse};
+use quickbar::{files_listed, open_quickbar, quickbar_key, quickbar_mouse, quickbar_paste};
 use editor::*;
 use find::*;
 use git::*;
@@ -45,7 +45,22 @@ use mouse::handle_mouse;
 use search::*;
 use sidebar_nav::*;
 use tabs::*;
-use terminal::sync_terminal_size;
+use terminal::{paste_into_terminal, sync_terminal_size};
+
+/// Resolves `key` against the user's global shortcuts (Quit, Save, panel
+/// switches, ...) and applies the action if there is one. Shared fallback for
+/// every modal overlay (quickbar, dialog, context menu): a key the overlay
+/// itself doesn't recognize falls through here instead of being silently
+/// swallowed, so e.g. Ctrl+Q/Ctrl+S still work while one is open.
+pub(super) fn overlay_fallback(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
+    // Only the user-bound command table, never `keymap::resolve`'s hardcoded
+    // typing/motion fallback — an overlay is open, so a plain letter must not
+    // fall through into the editor buffer as text.
+    match model.keybindings.resolve(key, Focus::Editor) {
+        Some(action) => apply_action(model, action),
+        None => Vec::new(),
+    }
+}
 
 /// Fires debounced work whose deadline has elapsed. Called once per main-loop
 /// iteration (not on a message) so autocomplete and `didChange` are throttled
@@ -103,7 +118,13 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                     }
                 }
             }
-            if let Some(action) = keymap::resolve(&model.keybindings, key, model.focus) {
+            if let Some(action) = keymap::resolve(&model.keybindings, key, model.focus, model.leader) {
+// Consume the leader latch once a command has fired (it may have just
+// been used to unlock a locked command). The Leader key itself re-arms it.
+if model.leader && !matches!(action, Action::Leader) {
+model.leader = false;
+}
+
                 return apply_action(model, action);
             }
             Vec::new()
@@ -119,6 +140,34 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 return menu_mouse(model, m);
             }
             handle_mouse(model, m)
+        }
+        // A terminal bracketed paste, routed the same way `Msg::Key` cascades
+        // through overlays: whichever one currently owns input gets the text.
+        // Falling through to nothing (e.g. `Focus::Sidebar`) is deliberate — it
+        // is also what keeps a stray paste from firing single-letter shortcuts
+        // (Git panel `a`/`r` stage/revert) one keystroke at a time, which is
+        // what happened before bracketed paste existed.
+        Msg::Paste(text) => {
+            if model.quickbar.is_some() {
+                return quickbar_paste(model, &text);
+            }
+            if model.dialog.is_some() {
+                return dialog_paste(model, &text);
+            }
+            if model.context_menu.is_some() {
+                return Vec::new();
+            }
+            if let Some((input, multiline)) = focused_input(model) {
+                input.insert_paste(&text, multiline);
+                if model.focus == Focus::Find && model.find.field == FindField::Query {
+                    recompute_find(model);
+                }
+                return Vec::new();
+            }
+            if model.focus == Focus::Terminal {
+                return paste_into_terminal(model, &text);
+            }
+            paste_into_editor(model, &text)
         }
         Msg::Resize(w, h) => {
             model.term_size = (w, h);

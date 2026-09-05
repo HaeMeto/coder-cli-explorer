@@ -99,6 +99,22 @@ pub(super) fn apply_motion(b: &mut Buffer, motion: Motion, extend: bool, page: u
     }
 }
 
+/// Pastes `text` into the active buffer (a no-op outside `Focus::Editor` or on
+/// a read-only tab — see `mutate`), then runs the language formatter over the
+/// whole document when format-on-paste is enabled. Shared by `Action::Paste`
+/// (Ctrl+V, reads the system/OSC-52 clipboard) and `Msg::Paste` (a terminal
+/// bracketed paste, which already carries the text) so both behave identically.
+pub(super) fn paste_into_editor(model: &mut Model, text: &str) -> Vec<Cmd> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut cmds = mutate(model, |b| b.insert_paste(text));
+    if model.sidebar.settings.format_on_paste {
+        cmds.extend(super::lsp::request_format(model, false));
+    }
+    cmds
+}
+
 pub(super) fn read_clipboard(model: &Model) -> String {
     let text = crate::services::clipboard::get_text();
     if !text.is_empty() {

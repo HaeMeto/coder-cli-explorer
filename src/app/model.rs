@@ -72,7 +72,9 @@ impl Panel {
 /// Editor preferences applied at save time. Edited via `config.toml`, not the UI.
 pub struct SettingsState {
     /// Master switch: run the enabled format actions when saving.
-    pub format_on_save: bool,
+ pub format_on_save: bool,
+ /// Run the language formatter after a paste (off by default).
+ pub format_on_paste: bool,
     /// Strip trailing spaces/tabs from each line on save (when format_on_save).
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single newline on save (when format_on_save).
@@ -84,7 +86,8 @@ pub struct SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         SettingsState {
-            format_on_save: false,
+ format_on_save: false,
+ format_on_paste: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             inline_diagnostics: true,
@@ -784,6 +787,9 @@ pub struct Model {
     pub should_quit: bool,
     /// User-editable keyboard shortcuts (loaded from `keybindings.toml`).
     pub keybindings: crate::services::keybindings::Keybindings,
+ /// Leader/unlock mode: while true, locked commands fire directly instead of
+ /// falling through to typing/motion (see `Action::Leader`).
+ pub leader: bool,
     pub internal_clipboard: String,
     pub theme: Theme,
     /// Last known terminal size — for mouse hit-testing and layout.
@@ -926,6 +932,7 @@ impl Model {
             layout: LayoutState::default(),
             focus: Focus::Sidebar,
             should_quit: false,
+ leader: false,
             internal_clipboard: String::new(),
             // Keep the UI palette and the syntax theme consistent at startup.
             theme: highlight::theme_for(highlight::DEFAULT_THEME),
@@ -1341,6 +1348,7 @@ impl Model {
         }
         let s = &mut self.sidebar.settings;
         s.format_on_save = config.format_on_save;
+ s.format_on_paste = config.format_on_paste;
         s.trim_trailing_whitespace = config.trim_trailing_whitespace;
         s.insert_final_newline = config.insert_final_newline;
         s.inline_diagnostics = config.inline_diagnostics;
@@ -1353,7 +1361,8 @@ impl Model {
         let s = &self.sidebar.settings;
         crate::services::config::Config {
             theme: self.current_theme_name().to_string(),
-            format_on_save: s.format_on_save,
+ format_on_save: s.format_on_save,
+ format_on_paste: s.format_on_paste,
             trim_trailing_whitespace: s.trim_trailing_whitespace,
             insert_final_newline: s.insert_final_newline,
             inline_diagnostics: s.inline_diagnostics,

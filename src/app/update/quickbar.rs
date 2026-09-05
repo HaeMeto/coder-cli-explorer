@@ -63,14 +63,20 @@ pub(super) fn quickbar_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 Vec::new()
             }
             // Anything else is a global shortcut: make sure it still works.
-            _ => {
-                if let Some(action) = model.keybindings.resolve(key, Focus::Editor) {
-                    return apply_action(model, action);
-                }
-                Vec::new()
-            }
+            _ => overlay_fallback(model, key),
         },
     }
+}
+
+/// Pastes into the quickbar's query field (single-line: embedded newlines fold
+/// to spaces) and re-filters the list.
+pub(super) fn quickbar_paste(model: &mut Model, text: &str) -> Vec<Cmd> {
+    let Some(qb) = model.quickbar.as_mut() else {
+        return Vec::new();
+    };
+    qb.input.insert_paste(text, false);
+    rebuild_items(model);
+    Vec::new()
 }
 
 /// Runs the currently highlighted quickbar entry and closes the palette.

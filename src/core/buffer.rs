@@ -501,8 +501,19 @@ impl Buffer {
     /// Inserts pasted text, re-indenting the continuation lines so the block
     /// aligns to the cursor's current indentation instead of keeping whatever
     /// (often deeper) leading whitespace it was copied with. Single-line pastes
-    /// insert verbatim.
+    /// insert verbatim — unless the whole paste is a JSON object/array, which is
+    /// pretty-printed first (see `pretty_print_json`), so a minified blob (e.g.
+    /// copied from a browser's network tab) lands readable instead of as one
+    /// giant line.
     pub fn insert_paste(&mut self, text: &str) {
+        let owned;
+        let text = match pretty_print_json(text) {
+            Some(pretty) => {
+                owned = pretty;
+                owned.as_str()
+            }
+            None => text,
+        };
         if !text.contains('\n') {
             self.insert_str(text);
             return;
@@ -881,6 +892,24 @@ fn leading_indent_width(line: &str) -> usize {
 /// already supplies its indent). Every continuation line has the block's shared
 /// minimum indentation stripped and `base` — the indentation of the line the
 /// paste lands on — prefixed instead. Blank lines stay empty.
+/// Pretty-prints `text` if (and only if) it is, as a whole, a JSON object or
+/// array — the common "pasted a minified JSON blob" case. Gated on the first
+/// non-whitespace char being `{`/`[` so this never touches plain text that
+/// merely happens to parse as a bare JSON scalar (e.g. pasting the word `null`
+/// or a bare number into code): those would round-trip unchanged anyway, but
+/// skipping them avoids paying a parse for every ordinary paste.
+/// Deliberately unconditional (not behind `format_on_paste`): it only ever
+/// fires on strictly valid JSON, so it can't misfire on code that merely looks
+/// structured (unquoted keys, trailing commas, comments — all invalid JSON).
+fn pretty_print_json(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    serde_json::to_string_pretty(&value).ok()
+}
+
 fn reindent_paste(text: &str, base: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     // Shared indentation is measured across the continuation lines only; the
@@ -1222,6 +1251,45 @@ mod tests {
         b.cursor = Cursor { line: 0, col: 2 };
         b.insert_paste("a\n\n    b");
         assert_eq!(b.full_text(), "  a\n\n  b");
+    }
+
+    #[test]
+    fn paste_pretty_prints_minified_json_object() {
+        // A minified JSON blob (e.g. copied from a browser's network tab) is a
+        // single line with no newline — it must still get pretty-printed rather
+        // than land as one giant line.
+        let mut b = Buffer::new(None, "");
+        b.insert_paste(r#"{"a":1,"b":[2,3]}"#);
+        assert_eq!(b.full_text(), "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ]\n}");
+    }
+
+    #[test]
+    fn paste_pretty_printed_json_reindents_to_cursor() {
+        // The pretty-print result then goes through the normal reindent path,
+        // so it still lands at the cursor's indentation, not column 0.
+        let mut b = Buffer::new(None, "    ");
+        b.cursor = Cursor { line: 0, col: 4 };
+        b.insert_paste(r#"{"a":1}"#);
+        assert_eq!(b.full_text(), "    {\n      \"a\": 1\n    }");
+    }
+
+    #[test]
+    fn paste_does_not_reformat_non_json_braces() {
+        // Text that merely starts with '{' but isn't valid JSON (unquoted key,
+        // trailing semicolon — a Rust/JS block) must be left completely alone.
+        let mut b = Buffer::new(None, "");
+        b.insert_paste("{ let x = 1; }");
+        assert_eq!(b.full_text(), "{ let x = 1; }");
+    }
+
+    #[test]
+    fn paste_does_not_reformat_bare_json_scalars() {
+        // A bare word that happens to parse as a JSON scalar (not an object/
+        // array) is left verbatim — pretty-printing a lone `true` would be a
+        // silent no-op anyway, but this confirms the '{'/'[' gate skips it.
+        let mut b = Buffer::new(None, "");
+        b.insert_paste("null");
+        assert_eq!(b.full_text(), "null");
     }
 
     #[test]

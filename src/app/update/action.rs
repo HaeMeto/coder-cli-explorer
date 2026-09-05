@@ -18,6 +18,12 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             model.should_quit = true;
             Vec::new()
         }
+ Action::Leader => {
+ // Enter leader/unlock mode: the next locked command chord fires
+ // directly instead of falling through to typing/motion.
+ model.leader = true;
+ Vec::new()
+ }
         Action::ToggleSidebar => {
             model.layout.sidebar_open = !model.layout.sidebar_open;
             if !model.layout.sidebar_open
@@ -175,13 +181,10 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 }
             Vec::new()
         }
-        Action::Paste => {
-            let text = read_clipboard(model);
-            if !text.is_empty() {
-                return mutate(model, |b| b.insert_paste(&text));
-            }
-            Vec::new()
-        }
+ Action::Paste => {
+ let text = read_clipboard(model);
+ paste_into_editor(model, &text)
+ }
 
         // ----- Sidebar navigation -----
         // In the Git panel the arrows drive the change list, so they stay put

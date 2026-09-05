@@ -13,7 +13,7 @@ lto = true
 
 [dependencies]
 ratatui = "0.30.2"
-crossterm = { version = "0.29", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
 tui-widget-list = "0.15"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "process", "time", "io-util"] }
 ropey = "1.6"

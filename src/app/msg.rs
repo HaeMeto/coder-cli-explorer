@@ -15,6 +15,10 @@ pub enum Msg {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
+    /// A whole block of text pasted into the terminal (bracketed paste),
+    /// delivered as one atomic event instead of a flood of key events — see
+    /// `main::map_event`.
+    Paste(String),
     /// The terminal event stream ended or errored — exit the main loop.
     Quit,
 

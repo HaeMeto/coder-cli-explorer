@@ -77,6 +77,9 @@ pub enum Action {
     // Terminal raw input
     PtyInput(Vec<u8>),
 
+ /// Toggle the "leader" state: the next locked command fires directly instead
+ /// of waiting for an explicit unlock (a nested/leader-key command mode).
+ Leader,
     Escape,
 }
 
@@ -94,15 +97,21 @@ pub enum Motion {
     WordRight,
 }
 
-pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus) -> Option<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) -> Option<Action> {
+ let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+ let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // User-editable command shortcuts (quit, save, copy, new file, …) win first.
-    // Whatever they don't claim falls through to the fixed typing/motion below.
-    if let Some(action) = keys.resolve(key, focus) {
-        return Some(action);
-    }
+ // User-editable command shortcuts (quit, save, copy, new file, ...) win first.
+ // The locked flag is resolved here: a locked command only fires while the
+ // leader (unlock) key is held, otherwise it returns `None` so the keystroke
+ // falls through to typing/motion below.
+ if let Some(full) = keys.resolve_full(key, focus) {
+ if full.locked && !unlock {
+ return None;
+ }
+ return Some(full.action);
+ }
+
 
     match focus {
         Focus::Terminal => resolve_terminal(key, ctrl, shift),

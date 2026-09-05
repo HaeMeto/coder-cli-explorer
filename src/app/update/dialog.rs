@@ -2,45 +2,68 @@
 
 use super::*;
 
-/// Handles keyboard input while a dialog is open.
+/// Handles keyboard input while a dialog is open. Everything the dialog itself
+/// doesn't recognize falls through to `overlay_fallback` (Ctrl+Q/Ctrl+S, panel
+/// switches, ...) — reading `d.kind`/`d.selected` through short-lived reborrows
+/// rather than holding one across the fallback call, since that needs `model`
+/// free.
 pub(super) fn dialog_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
-    let Some(d) = model.dialog.as_mut() else {
+    let Some(kind) = model.dialog.as_ref().map(|d| d.kind) else {
         return Vec::new();
     };
-    match d.kind {
+    match kind {
         DialogKind::Info => match key.code {
             KeyCode::Enter | KeyCode::Esc => dialog_confirm(model),
-            _ => Vec::new(),
+            _ => overlay_fallback(model, key),
         },
         DialogKind::Ask => match key.code {
             KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
-                d.selected ^= 1;
+                if let Some(d) = model.dialog.as_mut() {
+                    d.selected ^= 1;
+                }
                 Vec::new()
             }
             KeyCode::Char('e') | KeyCode::Char('y') => dialog_confirm(model),
             KeyCode::Char('h') | KeyCode::Char('n') | KeyCode::Esc => dialog_cancel(model),
             KeyCode::Enter => {
-                if d.selected == 0 {
+                let selected = model.dialog.as_ref().map(|d| d.selected).unwrap_or(0);
+                if selected == 0 {
                     dialog_confirm(model)
                 } else {
                     dialog_cancel(model)
                 }
             }
-            _ => Vec::new(),
+            _ => overlay_fallback(model, key),
         },
         DialogKind::Input => {
             // The input widget consumes typing and caret motion; only the keys it
-            // ignores (Enter/Esc) drive the dialog.
-            match d.input.handle_key(key, false) {
+            // ignores (Enter/Esc/global shortcuts) drive the dialog.
+            let Some(d) = model.dialog.as_mut() else {
+                return Vec::new();
+            };
+            let outcome = d.input.handle_key(key, false);
+            match outcome {
                 InputOutcome::Ignored => match key.code {
                     KeyCode::Enter => dialog_confirm(model),
                     KeyCode::Esc => dialog_cancel(model),
-                    _ => Vec::new(),
+                    _ => overlay_fallback(model, key),
                 },
                 _ => Vec::new(),
             }
         }
     }
+}
+
+/// Pastes into the dialog's text field, if it has one (the `Input` kind only —
+/// `Ask`/`Info` dialogs have nothing to paste into).
+pub(super) fn dialog_paste(model: &mut Model, text: &str) -> Vec<Cmd> {
+    let Some(d) = model.dialog.as_mut() else {
+        return Vec::new();
+    };
+    if d.kind == DialogKind::Input {
+        d.input.insert_paste(text, false);
+    }
+    Vec::new()
 }
 
 /// Handles mouse clicks while a dialog is open (buttons).
@@ -144,6 +167,43 @@ fn dialog_cancel(model: &mut Model) -> Vec<Cmd> {
 #[cfg(test)]
 mod dialog_tests {
     use super::sanitize_name;
+    use super::dialog_key;
+    use crate::app::model::{Dialog, DialogAction, Model};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char, ctrl: bool) -> KeyEvent {
+        let m = if ctrl { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
+        KeyEvent::new(KeyCode::Char(c), m)
+    }
+
+    #[test]
+    fn global_shortcut_still_fires_while_a_dialog_is_open() {
+        // Regression test: a dialog (New File/Rename/Delete confirm/...) must not
+        // swallow Ctrl+Q — it should fall through to the global keybinding just
+        // like the quickbar already does.
+        let mut model = Model::new(std::env::temp_dir());
+        model.dialog = Some(Dialog::ask(
+            "Delete?".to_string(),
+            "Are you sure?".to_string(),
+            DialogAction::None,
+        ));
+        dialog_key(&mut model, key('q', true));
+        assert!(model.should_quit, "Ctrl+Q must quit even with a dialog open");
+    }
+
+    #[test]
+    fn dialogs_own_keys_are_not_overridden_by_the_fallback() {
+        // 'y' (confirm) must still be handled by the Ask dialog itself, not
+        // treated as an unbound key that falls through and does nothing.
+        let mut model = Model::new(std::env::temp_dir());
+        model.dialog = Some(Dialog::ask(
+            "Delete?".to_string(),
+            "Are you sure?".to_string(),
+            DialogAction::None,
+        ));
+        dialog_key(&mut model, key('y', false));
+        assert!(model.dialog.is_none(), "'y' should confirm and close the dialog");
+    }
 
     #[test]
     fn names_confined_to_one_directory_are_accepted() {

@@ -11,38 +11,49 @@ pub(super) fn open_file_menu(model: &mut Model, idx: usize, x: u16, y: u16) -> V
     Vec::new()
 }
 
-/// Handles keyboard input while the menu is open. It captures every key.
+/// Handles keyboard input while the menu is open. Navigation/execute/close are
+/// its own; anything else falls through to `overlay_fallback` (Ctrl+Q/Ctrl+S,
+/// panel switches, ...) instead of being swallowed.
 pub(super) fn menu_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
-    let Some(m) = model.context_menu.as_mut() else {
+    if model.context_menu.is_none() {
         return Vec::new();
-    };
+    }
     let last = MenuItem::ALL.len() - 1;
     match key.code {
         KeyCode::Up => {
-            m.selected = if m.selected == 0 { last } else { m.selected - 1 };
+            if let Some(m) = model.context_menu.as_mut() {
+                m.selected = if m.selected == 0 { last } else { m.selected - 1 };
+            }
             Vec::new()
         }
         KeyCode::Down => {
-            m.selected = if m.selected == last { 0 } else { m.selected + 1 };
+            if let Some(m) = model.context_menu.as_mut() {
+                m.selected = if m.selected == last { 0 } else { m.selected + 1 };
+            }
             Vec::new()
         }
         KeyCode::Home => {
-            m.selected = 0;
+            if let Some(m) = model.context_menu.as_mut() {
+                m.selected = 0;
+            }
             Vec::new()
         }
         KeyCode::End => {
-            m.selected = last;
+            if let Some(m) = model.context_menu.as_mut() {
+                m.selected = last;
+            }
             Vec::new()
         }
         KeyCode::Enter => {
-            let item = MenuItem::ALL[m.selected];
+            let selected = model.context_menu.as_ref().map(|m| m.selected).unwrap_or(0);
+            let item = MenuItem::ALL[selected];
             run_item(model, item)
         }
         KeyCode::Esc => {
             model.context_menu = None;
             Vec::new()
         }
-        _ => Vec::new(),
+        _ => overlay_fallback(model, key),
     }
 }
 
@@ -81,5 +92,31 @@ fn run_item(model: &mut Model, item: MenuItem) -> Vec<Cmd> {
         MenuItem::NewFolder => new_entry_dialog(model, row, true),
         MenuItem::Rename => rename_dialog(model, row),
         MenuItem::Delete => delete_dialog(model, row),
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::menu_key;
+    use crate::app::model::{ContextMenu, Model};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn global_shortcut_still_fires_while_the_context_menu_is_open() {
+        // Regression test: the file-tree right-click menu must not swallow
+        // Ctrl+Q — it should fall through to the global keybinding just like
+        // the quickbar (and now the dialogs) already do.
+        let mut model = Model::new(std::env::temp_dir());
+        model.context_menu = Some(ContextMenu::new(0, 0, 0));
+        menu_key(&mut model, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(model.should_quit, "Ctrl+Q must quit even with the context menu open");
+    }
+
+    #[test]
+    fn menus_own_keys_are_not_overridden_by_the_fallback() {
+        let mut model = Model::new(std::env::temp_dir());
+        model.context_menu = Some(ContextMenu::new(0, 0, 0));
+        menu_key(&mut model, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(model.context_menu.is_none(), "Esc should still close the menu itself");
     }
 }

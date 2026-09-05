@@ -31,9 +31,10 @@ use toml::Value;
 use crate::core::highlight::DEFAULT_THEME;
 
 /// Top-level keys that are editor settings, not language sections.
-const SETTING_KEYS: [&str; 5] = [
+const SETTING_KEYS: [&str; 6] = [
     "theme",
     "format_on_save",
+    "format_on_paste",
     "trim_trailing_whitespace",
     "insert_final_newline",
     "inline_diagnostics",
@@ -60,7 +61,9 @@ pub struct Config {
     /// Selected theme name.
     pub theme: String,
     /// Run the enabled format actions when saving.
-    pub format_on_save: bool,
+ pub format_on_save: bool,
+ /// Run the language formatter after a paste (off by default).
+ pub format_on_paste: bool,
     /// Strip trailing whitespace on save.
     pub trim_trailing_whitespace: bool,
     /// Ensure a single final newline on save.
@@ -77,6 +80,7 @@ impl Default for Config {
         Config {
             theme: DEFAULT_THEME.to_string(),
             format_on_save: false,
+ format_on_paste: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             inline_diagnostics: true,
@@ -133,9 +137,12 @@ pub fn parse(text: &str) -> Config {
     if let Some(v) = table.get("theme").and_then(Value::as_str) {
         cfg.theme = v.to_string();
     }
-    if let Some(v) = table.get("format_on_save").and_then(Value::as_bool) {
-        cfg.format_on_save = v;
-    }
+	if let Some(v) = table.get("format_on_save").and_then(Value::as_bool) {
+		cfg.format_on_save = v;
+	}
+	if let Some(v) = table.get("format_on_paste").and_then(Value::as_bool) {
+		cfg.format_on_paste = v;
+	}
     if let Some(v) = table.get("trim_trailing_whitespace").and_then(Value::as_bool) {
         cfg.trim_trailing_whitespace = v;
     }
@@ -182,6 +189,7 @@ pub fn to_toml(config: &Config) -> String {
     let mut table = toml::Table::new();
     table.insert("theme".into(), Value::String(config.theme.clone()));
     table.insert("format_on_save".into(), Value::Boolean(config.format_on_save));
+ table.insert("format_on_paste".into(), Value::Boolean(config.format_on_paste));
     table.insert(
         "trim_trailing_whitespace".into(),
         Value::Boolean(config.trim_trailing_whitespace),
