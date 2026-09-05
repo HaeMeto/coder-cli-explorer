@@ -161,4 +161,6 @@ pub enum Msg {
         base: usize,
         lines: Vec<HlLine>,
     },
+    /// A session checkpoint write finished (see `Cmd::SaveSession`).
+    SessionSaved(crate::services::session::SaveOutcome),
 }

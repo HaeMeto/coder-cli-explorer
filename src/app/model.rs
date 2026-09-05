@@ -192,6 +192,11 @@ pub struct Tab {
     /// file's own line numbers instead of this view's row count, and the heading
     /// rows are styled rather than highlighted as code. Empty for a normal file.
     pub commit_rows: Vec<CommitRow>,
+    /// Stable id for a tab with no backing file (a scratch "Untitled-N" buffer
+    /// created via `Action::NewUntitledFile`), used as its session key since it
+    /// has no path. `None` once the buffer is saved to a real path, and for
+    /// every other kind of tab.
+    pub untitled_id: Option<String>,
 }
 
 impl Tab {
@@ -204,7 +209,18 @@ impl Tab {
             label: None,
             read_only: false,
             commit_rows: Vec::new(),
+            untitled_id: None,
         }
+    }
+
+    /// A fresh scratch buffer with no backing file ("Untitled-N"), typed into
+    /// first and named on save (`Action::Save` opens a Save As dialog for a
+    /// pathless buffer). `id` keys it in the session file until it gets a path.
+    pub fn untitled(id: String, seq: u64) -> Self {
+        let mut tab = Tab::new(Buffer::new(None, ""));
+        tab.label = Some(format!("Untitled-{seq}"));
+        tab.untitled_id = Some(id);
+        tab
     }
 
     /// A read-only diff tab for a history commit, titled "<hash> diff".
@@ -250,6 +266,16 @@ impl Tab {
             name
         }
     }
+}
+
+/// A tab's session key: its file path, or `"untitled:<id>"` for a scratch
+/// buffer. `None` for a generated tab (commit patch, binary notice) that the
+/// session never persists.
+fn tab_session_key(t: &Tab) -> Option<String> {
+    if let Some(id) = &t.untitled_id {
+        return Some(format!("untitled:{id}"));
+    }
+    t.buffer.path.as_ref().map(|p| p.display().to_string())
 }
 
 /// The active input field in the search panel.
@@ -409,6 +435,10 @@ pub enum DialogKind {
     Info,
     /// Text input (OK / Cancel).
     Input,
+    /// Three-way confirmation (Save / Don't Save / Cancel) — the quit prompt
+    /// when there are unsaved changes. `selected`: 0 = Save, 1 = Don't Save,
+    /// 2 = Cancel.
+    AskSave,
 }
 
 /// Action to perform when the dialog is confirmed.
@@ -436,6 +466,12 @@ pub enum DialogAction {
  /// Switch the workspace root to the folder typed in the dialog (VSCode
  /// "open folder").
  OpenWorkspace,
+    /// The quit confirmation when unsaved changes exist (`DialogKind::AskSave`):
+    /// branches on `Dialog.selected` rather than carrying its own payload.
+    QuitPrompt,
+    /// Save As for a pathless (untitled) buffer: the tab index, and the path
+    /// typed in the dialog becomes its file.
+    SaveAs(usize),
 }
 
 /// Modal dialog opened in the center of the screen. Captures all input while open.
@@ -472,6 +508,18 @@ impl Dialog {
             input: TextInputState::default(),
             selected: 0,
             action: DialogAction::None,
+        }
+    }
+
+    /// Save / Don't Save / Cancel — the quit prompt when tabs are dirty.
+    pub fn ask_save(title: String, message: String, action: DialogAction) -> Self {
+        Dialog {
+            kind: DialogKind::AskSave,
+            title,
+            message,
+            input: TextInputState::default(),
+            selected: 0,
+            action,
         }
     }
 
@@ -882,6 +930,37 @@ pub struct Model {
     pub pending_format: Option<PendingFormat>,
     /// A transient toast notification shown bottom-center, or `None`.
     pub toast: Option<Toast>,
+    /// This workspace's session-file generation last observed by this
+    /// instance (seeds the multi-instance conflict check in
+    /// `services::session::save`). `None` until the first load/save.
+    pub session_seen_generation: Option<u64>,
+    /// Deadline to flush a debounced session checkpoint, or `None`. Set a
+    /// couple seconds ahead on each edit, like `didchange_at`.
+    session_save_at: Option<std::time::Instant>,
+    /// Next number to hand out for "Untitled-N" (persisted across restarts so
+    /// numbering never collides with a still-open buffer).
+    pub untitled_seq: u64,
+    /// While a session restore is in flight: file tabs still loading async
+    /// (`Cmd::ReadFile`), keyed by path, with the cursor/scroll to apply once
+    /// loaded and — for a dirty file stored as a diff — the hunks to
+    /// reconstruct its unsaved content.
+    pub pending_session_restore: std::collections::HashMap<PathBuf, SessionRestore>,
+    /// While a session restore is in flight: the path of the tab that should
+    /// end up focused, so whichever async load happens to finish last doesn't
+    /// win the focus race. Cleared once that load arrives.
+    pub session_active_path: Option<PathBuf>,
+}
+
+/// What to restore onto a tab once its async `Cmd::ReadFile` result arrives
+/// during session restore (see `Model.pending_session_restore`).
+pub struct SessionRestore {
+    pub line: usize,
+    pub col: usize,
+    pub scroll_y: usize,
+    pub scroll_x: usize,
+    /// Present only for a dirty file that was stored as a diff against its
+    /// on-disk baseline: hunks to apply to the freshly loaded disk content.
+    pub dirty_hunks: Option<Vec<crate::services::session::Hunk>>,
 }
 
 /// How long a toast stays on screen.
@@ -972,6 +1051,11 @@ impl Model {
             completion: None,
             pending_format: None,
             toast: None,
+            session_seen_generation: None,
+            session_save_at: None,
+            untitled_seq: 0,
+            pending_session_restore: std::collections::HashMap::new(),
+            session_active_path: None,
             root,
         }
     }
@@ -1161,9 +1245,17 @@ impl Model {
         self.didchange_at = None;
     }
 
-    /// Returns `(autocomplete_due, didchange_due)` for deadlines that have elapsed
-    /// by `now`, clearing each that fired. Called once per main-loop iteration.
-    pub fn take_due_timers(&mut self, now: std::time::Instant) -> (bool, bool) {
+    /// Schedules a debounced session checkpoint (reset on every edit), so a
+    /// burst of typing writes the session file once it pauses rather than on
+    /// every keystroke.
+    pub fn schedule_session_save(&mut self) {
+        self.session_save_at = Some(std::time::Instant::now() + crate::services::session::CHECKPOINT_DEBOUNCE);
+    }
+
+    /// Returns `(autocomplete_due, didchange_due, session_save_due)` for
+    /// deadlines that have elapsed by `now`, clearing each that fired. Called
+    /// once per main-loop iteration.
+    pub fn take_due_timers(&mut self, now: std::time::Instant) -> (bool, bool, bool) {
         let ac = self.autocomplete_at.is_some_and(|t| t <= now);
         if ac {
             self.autocomplete_at = None;
@@ -1172,7 +1264,84 @@ impl Model {
         if dc {
             self.didchange_at = None;
         }
-        (ac, dc)
+        let ss = self.session_save_at.is_some_and(|t| t <= now);
+        if ss {
+            self.session_save_at = None;
+        }
+        (ac, dc, ss)
+    }
+
+    /// Next number to hand out for a new "Untitled-N" scratch buffer.
+    pub fn next_untitled_seq(&mut self) -> u64 {
+        self.untitled_seq += 1;
+        self.untitled_seq
+    }
+
+    /// A snapshot of every open tab plus window layout, for the session
+    /// checkpoint. Content is included only for dirty tabs (see
+    /// `services::session::Content`); large dirty files diff against their
+    /// current on-disk text where one is still readable, else keep full text.
+    pub fn session_snapshot(&self) -> crate::services::session::SessionSnapshot {
+        use crate::services::session::{Content, TabEntry, DIFF_THRESHOLD_BYTES};
+        let tabs = self
+            .tabs
+            .iter()
+            // Generated / read-only tabs (a commit patch, a binary-file notice)
+            // are not something the user edited — never worth restoring.
+            .filter(|t| !t.read_only && t.notice.is_none())
+            .map(|t| {
+                let buf = &t.buffer;
+                let text = buf.full_text();
+                let content = if !buf.dirty {
+                    None
+                } else if text.len() < DIFF_THRESHOLD_BYTES {
+                    Some(Content::Full { text: text.clone() })
+                } else {
+                    // Large dirty file: try to diff against what is currently on
+                    // disk so the checkpoint stores a hunk list instead of the
+                    // whole file. No readable baseline (deleted, or never had a
+                    // path) falls back to full text — the buffer already holds
+                    // it, so that fallback costs nothing extra.
+                    buf.path
+                        .as_ref()
+                        .and_then(|p| std::fs::read_to_string(p).ok())
+                        .and_then(|disk| crate::services::session::diff_hunks(&disk, &text))
+                        .map(|hunks| Content::Diff { hunks })
+                        .or(Some(Content::Full { text: text.clone() }))
+                };
+                TabEntry {
+                    kind: if t.untitled_id.is_some() { "untitled".into() } else { "file".into() },
+                    path: buf.path.as_ref().map(|p| p.display().to_string()),
+                    untitled_id: t.untitled_id.clone(),
+                    // Only an untitled tab's label ("Untitled-N") is worth
+                    // persisting — a file tab derives its title from the path.
+                    label: if t.untitled_id.is_some() { t.label.clone() } else { None },
+                    line: buf.cursor.line,
+                    col: buf.cursor.col,
+                    scroll_y: buf.scroll_y,
+                    scroll_x: buf.scroll_x,
+                    dirty: buf.dirty,
+                    content,
+                }
+            })
+            .collect();
+        // Identified by key (path, or "untitled:<id>"), not raw index: the
+        // filter above already dropped generated tabs, so a plain position
+        // would drift out from under the active tab it meant to name.
+        let active = self
+            .active_tab
+            .and_then(|i| self.tabs.get(i))
+            .and_then(tab_session_key);
+        crate::services::session::SessionSnapshot {
+            root: self.root.display().to_string(),
+            generation: 0, // filled in by `services::session::save`
+            active,
+            sidebar_panel: format!("{:?}", self.sidebar.active),
+            sidebar_width: self.layout.sidebar_width,
+            terminal_open: self.layout.terminal_open,
+            untitled_seq: self.untitled_seq,
+            tabs,
+        }
     }
 
     /// Forces the change-gutter diff to recompute on the next `refresh_git_marks`

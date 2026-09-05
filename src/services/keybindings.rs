@@ -65,6 +65,9 @@ pub enum Bindable {
     NewFile,
     NewFolder,
     DeleteEntry,
+    /// A fresh "Untitled-N" scratch buffer, typed into first and named on
+    /// save — distinct from `NewFile`, which creates a real file on disk.
+    NewUntitledFile,
 }
 
 /// Which focus modes a binding fires in.
@@ -99,7 +102,7 @@ impl Scope {
 
 impl Bindable {
     /// Every command, in file order (also the TOML write order).
-    const ALL: [Bindable; 32] = [
+    const ALL: [Bindable; 33] = [
         Bindable::Quit,
         Bindable::ToggleSidebar,
         Bindable::ToggleTerminal,
@@ -132,6 +135,7 @@ impl Bindable {
         Bindable::NewFile,
         Bindable::NewFolder,
         Bindable::DeleteEntry,
+        Bindable::NewUntitledFile,
     ];
 
     /// Stable TOML key name.
@@ -169,6 +173,7 @@ impl Bindable {
             Bindable::NewFile => "new_file",
             Bindable::NewFolder => "new_folder",
             Bindable::DeleteEntry => "delete_entry",
+            Bindable::NewUntitledFile => "new_untitled_file",
         }
     }
 
@@ -183,7 +188,8 @@ impl Bindable {
             | Bindable::Completion
             | Bindable::Format
             | Bindable::MoveLineUp
-            | Bindable::MoveLineDown => Scope::Editor,
+            | Bindable::MoveLineDown
+            | Bindable::NewUntitledFile => Scope::Editor,
             Bindable::NewFile | Bindable::NewFolder | Bindable::DeleteEntry => Scope::Sidebar,
             _ => Scope::Global,
         }
@@ -235,6 +241,10 @@ impl Bindable {
             Bindable::NewFile => "ctrl+n",
             Bindable::NewFolder => "alt+shift+n",
             Bindable::DeleteEntry => "delete",
+            // Same chord as the sidebar's `NewFile`, but a different scope
+            // (Editor vs Sidebar), so the two never collide — whichever is
+            // focused decides which one fires.
+            Bindable::NewUntitledFile => "ctrl+n",
         }
     }
 
@@ -273,6 +283,7 @@ impl Bindable {
             Bindable::NewFile => Action::NewFile,
             Bindable::NewFolder => Action::NewFolder,
             Bindable::DeleteEntry => Action::DeleteEntry,
+            Bindable::NewUntitledFile => Action::NewUntitledFile,
         }
     }
 

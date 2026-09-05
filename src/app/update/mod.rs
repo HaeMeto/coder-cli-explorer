@@ -30,6 +30,7 @@ mod menu;
 mod mouse;
 mod quickbar;
 mod search;
+mod session;
 mod sidebar_nav;
 mod tabs;
 mod terminal;
@@ -65,8 +66,15 @@ pub(super) fn overlay_fallback(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
 /// Fires debounced work whose deadline has elapsed. Called once per main-loop
 /// iteration (not on a message) so autocomplete and `didChange` are throttled
 /// without spawning a timer task per keystroke.
+/// Loads and rebuilds the workspace session at startup (see `services::session`
+/// and `update::session::restore`). Called once from `main::run`, before the
+/// event loop starts.
+pub fn restore_session(model: &mut Model) -> Vec<Cmd> {
+    session::restore(model)
+}
+
 pub fn tick(model: &mut Model) -> Vec<Cmd> {
-    let (autocomplete, didchange) = model.take_due_timers(std::time::Instant::now());
+    let (autocomplete, didchange, session_save) = model.take_due_timers(std::time::Instant::now());
     let mut cmds = Vec::new();
     if autocomplete {
         // The completion request flushes the current text on its own, so a pending
@@ -76,6 +84,12 @@ pub fn tick(model: &mut Model) -> Vec<Cmd> {
     }
     if didchange {
         cmds.extend(lsp::flush_didchange(model));
+    }
+    if session_save {
+        cmds.push(Cmd::SaveSession {
+            snapshot: model.session_snapshot(),
+            seen: model.session_seen_generation.unwrap_or(0),
+        });
     }
     cmds
 }
@@ -210,27 +224,80 @@ model.leader = false;
                 // Scroll to the first change once HEAD text arrives (marks need it).
                 model.pending_diff_scroll = Some(path.clone());
             }
-            model.tabs.push(tab);
-            model.active_tab = Some(model.tabs.len() - 1);
-            model.focus = Focus::Editor;
-            // Apply a pending goto if there is one (from a search result): center it.
-            let goto = model.pending_goto.take().filter(|(gp, _)| *gp == path);
-            if let Some((_, line)) = goto {
-                if let Some(buf) = model.active_buffer_mut() {
-                    buf.goto_line(line);
+
+            // Session restore: cursor/scroll for every restored tab, and for a
+            // dirty file that was checkpointed as a diff (large file), rebuild
+            // its unsaved content by applying the stored hunks over the disk
+            // text just read.
+            let restore = model.pending_session_restore.remove(&path);
+            if let Some(r) = &restore {
+                if let Some(hunks) = &r.dirty_hunks {
+                    match crate::services::session::apply_hunks(&text, hunks) {
+                        Some(restored) => {
+                            tab.buffer = Buffer::new(Some(path.clone()), &restored);
+                            tab.buffer.dirty = true;
+                        }
+                        None => model.notify(format!(
+                            "Could not restore unsaved changes for {}: the file changed too much",
+                            path.display()
+                        )),
+                    }
                 }
-                center_cursor_in_view(model);
-            } else {
-                ensure_cursor_visible(model);
+                let last = tab.buffer.line_count().saturating_sub(1);
+                let line = r.line.min(last);
+                let col = r.col.min(tab.buffer.line_len(line));
+                tab.buffer.cursor = Cursor { line, col };
+                tab.buffer.scroll_y = r.scroll_y.min(last);
+                tab.buffer.scroll_x = r.scroll_x;
+            }
+            let is_restore = restore.is_some();
+
+            model.tabs.push(tab);
+            let idx = model.tabs.len() - 1;
+
+            // While a session restore is choosing which tab should end up
+            // focused, only the matching load may claim `active_tab` —
+            // otherwise whichever file's async read happens to finish last
+            // would win the focus race.
+            let restoring_to_other = model
+                .session_active_path
+                .as_deref()
+                .is_some_and(|p| p != path.as_path());
+            if !restoring_to_other {
+                model.active_tab = Some(idx);
+                model.focus = Focus::Editor;
+                if model.session_active_path.as_deref() == Some(path.as_path()) {
+                    model.session_active_path = None;
+                }
+                if !is_restore {
+                    // Apply a pending goto if there is one (from a search
+                    // result): center it. Restored cursor/scroll (above) is
+                    // already exact, so this only runs for a fresh open.
+                    let goto = model.pending_goto.take().filter(|(gp, _)| *gp == path);
+                    if let Some((_, line)) = goto {
+                        if let Some(buf) = model.active_buffer_mut() {
+                            buf.goto_line(line);
+                        }
+                        center_cursor_in_view(model);
+                    } else {
+                        ensure_cursor_visible(model);
+                    }
+                }
             }
             // Load the HEAD content for the change gutter, and open the document
             // with its language server (if any).
-            let tab = model.tabs.len() - 1;
             let mut cmds = vec![Cmd::LoadHeadText(path)];
-            cmds.extend(lsp::open_tab(model, tab));
+            cmds.extend(lsp::open_tab(model, idx));
             cmds
         }
         Msg::FileLoadFailed { path, error } => {
+            // A session restore was waiting on this file (see `update::session`):
+            // release the guard so it doesn't block every load after it from
+            // ever claiming `active_tab` again.
+            model.pending_session_restore.remove(&path);
+            if model.session_active_path.as_deref() == Some(path.as_path()) {
+                model.session_active_path = None;
+            }
             // Reuse an already-open tab for this file, else open a read-only notice tab.
             if let Some(i) = model.tab_index_for(&path) {
                 model.tabs[i].notice = Some(error);
@@ -535,6 +602,28 @@ model.leader = false;
                 model.toast = None;
             }
             Vec::new()
+        }
+        Msg::SessionSaved(outcome) => {
+            use crate::services::session::SaveOutcome;
+            match outcome {
+                SaveOutcome::Saved(new_gen) => {
+                    model.session_seen_generation = Some(new_gen);
+                    Vec::new()
+                }
+                SaveOutcome::Conflict(disk_gen) => {
+                    // Another coder instance wrote a newer checkpoint since we last
+                    // checked: adopt its generation as our new baseline (so we don't
+                    // re-report the same conflict every checkpoint) and skip this
+                    // write rather than clobber it — see `services::session::save`'s
+                    // multi-instance note.
+                    model.session_seen_generation = Some(disk_gen);
+                    model.notify(
+                        "Session updated by another coder window; this checkpoint was skipped".to_string(),
+                    );
+                    Vec::new()
+                }
+                SaveOutcome::NoPath => Vec::new(),
+            }
         }
     }
 }

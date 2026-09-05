@@ -34,6 +34,9 @@ pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
         // The change-gutter git diff is intentionally NOT refreshed here: it stays
         // frozen at its last state while editing and only recomputes on save /
         // reload / disk change (see `Model::refresh_git_marks`).
+        // Debounced session checkpoint, so a crash (or a kill) never loses more
+        // than a couple seconds of typing — see `Model::schedule_session_save`.
+        model.schedule_session_save();
         super::lsp::notify_change(model)
     } else {
         Vec::new()
@@ -69,7 +72,7 @@ pub(super) fn apply_format_on_save(model: &mut Model) {
 }
 
 /// Trims trailing whitespace per line and/or ensures a single final newline.
-fn format_text(text: &str, trim: bool, final_nl: bool) -> String {
+pub(super) fn format_text(text: &str, trim: bool, final_nl: bool) -> String {
     let mut result = if trim {
         text.split('\n')
             .map(|l| l.trim_end_matches([' ', '\t']))

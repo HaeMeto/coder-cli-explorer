@@ -51,6 +51,52 @@ pub(super) fn dialog_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                 _ => Vec::new(),
             }
         }
+        DialogKind::AskSave => match key.code {
+            KeyCode::Left | KeyCode::BackTab => {
+                cycle_selected(model, -1);
+                Vec::new()
+            }
+            KeyCode::Right | KeyCode::Tab => {
+                cycle_selected(model, 1);
+                Vec::new()
+            }
+            KeyCode::Char('s') => dialog_button(model, kind, 0),
+            KeyCode::Char('d') | KeyCode::Char('n') => dialog_button(model, kind, 1),
+            KeyCode::Char('c') | KeyCode::Esc => dialog_button(model, kind, 2),
+            KeyCode::Enter => {
+                let selected = model.dialog.as_ref().map(|d| d.selected).unwrap_or(0);
+                dialog_button(model, kind, selected)
+            }
+            _ => overlay_fallback(model, key),
+        },
+    }
+}
+
+/// Moves `AskSave`'s selection by `delta`, wrapping across its 3 buttons.
+fn cycle_selected(model: &mut Model, delta: isize) {
+    if let Some(d) = model.dialog.as_mut() {
+        d.selected = (d.selected as isize + delta).rem_euclid(3) as usize;
+    }
+}
+
+/// Activates dialog button `idx` (0/1/2, see `ui::dialog::hit`), shared by
+/// keyboard and mouse. For `AskSave`, index 2 ("Cancel") just closes the
+/// dialog; 0/1 select and confirm (branching on `Dialog.selected` inside
+/// `dialog_confirm`). Every other kind keeps its plain confirm/cancel split.
+fn dialog_button(model: &mut Model, kind: DialogKind, idx: usize) -> Vec<Cmd> {
+    if kind == DialogKind::AskSave {
+        if idx == 2 {
+            return dialog_cancel(model);
+        }
+        if let Some(d) = model.dialog.as_mut() {
+            d.selected = idx;
+        }
+        return dialog_confirm(model);
+    }
+    if idx == 0 {
+        dialog_confirm(model)
+    } else {
+        dialog_cancel(model)
     }
 }
 
@@ -70,12 +116,10 @@ pub(super) fn dialog_paste(model: &mut Model, text: &str) -> Vec<Cmd> {
 pub(super) fn dialog_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
         let term = full_rect(model);
-        if let Some(d) = model.dialog.as_ref() {
-            match ui::dialog::hit(d, term, m.column, m.row) {
-                Some(true) => return dialog_confirm(model),
-                Some(false) => return dialog_cancel(model),
-                None => {}
-            }
+        let hit = model.dialog.as_ref().and_then(|d| ui::dialog::hit(d, term, m.column, m.row));
+        if let Some(idx) = hit {
+            let kind = model.dialog.as_ref().map(|d| d.kind).unwrap_or(DialogKind::Ask);
+            return dialog_button(model, kind, idx);
         }
     }
     Vec::new()
@@ -86,6 +130,7 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
     let Some(d) = model.dialog.take() else {
         return Vec::new();
     };
+    let selected = d.selected;
     match d.action {
         DialogAction::GitRevert(rel) => vec![Cmd::GitRevert(rel)],
         DialogAction::NewFile(dir) => create_in(model, dir, d.input.content(), false),
@@ -103,6 +148,16 @@ DialogAction::OpenWorkspace => {
  model.open_folder(root.clone());
  vec![Cmd::ScanDir(root), Cmd::LoadGitStatus]
 }
+        // `selected` is 0 ("Save") or 1 ("Don't Save") — index 2 ("Cancel")
+        // never reaches here, `dialog_button` closes the dialog for it directly.
+        DialogAction::QuitPrompt => {
+            if selected == 0 {
+                save_all_and_quit(model)
+            } else {
+                discard_and_quit(model)
+            }
+        }
+        DialogAction::SaveAs(tab) => save_as(model, tab, d.input.content()),
         DialogAction::None => Vec::new(),
     }
 }
@@ -216,5 +271,71 @@ mod dialog_tests {
         for bad in ["", "   ", ".", "..", "a/b", "../etc/passwd", "a\\b"] {
             assert!(sanitize_name(bad).is_none(), "{bad} should be rejected");
         }
+    }
+
+    /// `name` must be unique per test: these run concurrently in the same
+    /// process, so two tests sharing a directory could race each other's
+    /// fixture setup/cleanup (create/write/remove on the very same path).
+    fn dirty_model_with_one_tab(name: &str) -> (Model, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("coder-ask-save-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.txt");
+        std::fs::write(&path, "old").unwrap();
+        let mut model = Model::new(dir);
+        model.tabs.push(crate::app::model::Tab::new(crate::core::buffer::Buffer::new(
+            Some(path.clone()),
+            "old",
+        )));
+        model.tabs[0].buffer.insert_str("new");
+        (model, path)
+    }
+
+    #[test]
+    fn quit_with_dirty_tabs_opens_ask_save_instead_of_quitting() {
+        use crate::app::update::action::apply_action;
+        use crate::core::keymap::Action;
+        let (mut model, _path) = dirty_model_with_one_tab("opens");
+        apply_action(&mut model, Action::Quit);
+        assert!(!model.should_quit, "must ask before quitting with unsaved changes");
+        assert!(matches!(model.dialog.as_ref().map(|d| d.kind), Some(crate::app::model::DialogKind::AskSave)));
+    }
+
+    #[test]
+    fn ask_save_enter_saves_and_quits_by_default() {
+        use crate::app::update::action::apply_action;
+        use crate::core::keymap::Action;
+        let (mut model, path) = dirty_model_with_one_tab("save");
+        apply_action(&mut model, Action::Quit);
+        // "Save" is the default selection (index 0).
+        dialog_key(&mut model, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(model.should_quit);
+        assert!(!model.tabs[0].buffer.dirty);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ask_save_dont_save_quits_without_writing() {
+        use crate::app::update::action::apply_action;
+        use crate::core::keymap::Action;
+        let (mut model, path) = dirty_model_with_one_tab("dont_save");
+        apply_action(&mut model, Action::Quit);
+        dialog_key(&mut model, key('d', false));
+        assert!(model.should_quit);
+        assert!(model.tabs[0].buffer.dirty, "not written back, but nothing is lost either");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old", "the real file is untouched");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ask_save_cancel_just_closes_the_dialog() {
+        use crate::app::update::action::apply_action;
+        use crate::core::keymap::Action;
+        let (mut model, path) = dirty_model_with_one_tab("cancel");
+        apply_action(&mut model, Action::Quit);
+        dialog_key(&mut model, key('c', false));
+        assert!(model.dialog.is_none());
+        assert!(!model.should_quit, "Cancel aborts the quit entirely");
+        let _ = std::fs::remove_file(&path);
     }
 }

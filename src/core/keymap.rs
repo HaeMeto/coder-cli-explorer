@@ -38,6 +38,10 @@ pub enum Action {
     Format,
     /// Open the editable keybindings file in the editor (Alt+7).
     ShowShortcuts,
+    /// Open a fresh "Untitled-N" scratch buffer (Ctrl+N from the editor) — no
+    /// backing file until it is saved. Distinct from `NewFile` below, which
+    /// creates a real file on disk from the sidebar's file tree.
+    NewUntitledFile,
 
     // Sidebar navigation
     NavUp,

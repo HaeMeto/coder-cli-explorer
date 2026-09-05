@@ -179,12 +179,28 @@ async fn run(
         Cmd::LoadGitStatus,
         Cmd::CheckTools(model.extensions.tool_commands()),
     ];
+    // Reopen this workspace's tabs (cursor/scroll, and any unsaved content —
+    // see `services::session`), before an explicit CLI file so the latter can
+    // still dedupe against a tab the session already restored.
+    cmds.extend(update::restore_session(&mut model));
     // Opened with a file: keep the sidebar collapsed (the user opens it when needed)
     // and load the file straight into the editor.
     if let Some(file) = open_file {
         model.layout.sidebar_open = false;
         model.focus = crate::app::model::Focus::Editor;
-        cmds.push(Cmd::ReadFile(file));
+        // Already restored (synchronously — a dirty file small enough to have
+        // kept full text): just focus it instead of reading it a second time
+        // into a duplicate tab.
+        if let Some(i) = model.tab_index_for(&file) {
+            model.active_tab = Some(i);
+        // Already queued for async restore (a clean file, or a large dirty
+        // file stored as a diff): let that load finish, just claim the focus
+        // — explicit CLI intent wins over whatever the session remembered.
+        } else if model.pending_session_restore.contains_key(&file) {
+            model.session_active_path = Some(file);
+        } else {
+            cmds.push(Cmd::ReadFile(file));
+        }
     }
     dispatch(cmds, &model, &tx);
 
@@ -242,6 +258,14 @@ async fn run(
             Err(_) => {}       // idle tick: just loop and repaint
         }
     }
+    // One last checkpoint on the way out, synchronously (the process exits right
+    // after — an async `Cmd::SaveSession` could get dropped mid-flight along with
+    // every other in-flight task once the tokio runtime shuts down). Covers both
+    // quit paths: "Don't Save" (dirty tabs must still survive to the next launch)
+    // and a clean quit (cursor/scroll positions are worth keeping either way).
+    let mut snapshot = model.session_snapshot();
+    let seen = model.session_seen_generation.unwrap_or(0);
+    let _ = crate::services::session::save(&model.root, &mut snapshot, seen);
     Ok(())
 }
 

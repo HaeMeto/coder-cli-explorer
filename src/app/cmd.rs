@@ -112,6 +112,14 @@ pub enum Cmd {
     /// Wake the app after the toast duration so an expired toast is cleared even
     /// without other events arriving.
     ScheduleToastExpiry,
+    /// Write a debounced session checkpoint (open tabs, cursor/scroll, unsaved
+    /// content) for the current workspace. `seen` is the generation this
+    /// instance last observed — see `services::session::save`'s multi-instance
+    /// note; result -> `Msg::SessionSaved`.
+    SaveSession {
+        snapshot: services::session::SessionSnapshot,
+        seen: u64,
+    },
 }
 
 /// Whether a command names an executable that exists: a path with a separator is
@@ -637,6 +645,12 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::spawn(async move {
                 tokio::time::sleep(crate::app::model::TOAST_DURATION).await;
                 let _ = tx.send(Msg::ToastExpired);
+            });
+        }
+        Cmd::SaveSession { mut snapshot, seen } => {
+            tokio::task::spawn_blocking(move || {
+                let outcome = services::session::save(&root, &mut snapshot, seen);
+                let _ = tx.send(Msg::SessionSaved(outcome));
             });
         }
     }
