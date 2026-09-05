@@ -215,7 +215,13 @@ impl Bindable {
             Bindable::Themes => "alt+5",
             Bindable::Settings => "alt+6",
             Bindable::Rename => "f2",
- Bindable::Leader => "ctrl+:",
+ // Alt+letter, not Ctrl+Shift+<punctuation>: like the Alt+digit panel
+ // shortcuts above, this is a distinct ESC-prefixed sequence every
+ // terminal reports. Ctrl+Shift+; (the old default, "ctrl+:") has no
+ // standard ASCII control code, so most terminals without the kitty
+ // keyboard protocol send it as a bare ';'/':' with no Ctrl bit at all —
+ // the leader key would silently never fire.
+ Bindable::Leader => "alt+l",
             Bindable::Copy => "ctrl+c",
             Bindable::Cut => "ctrl+x",
             Bindable::Paste => "ctrl+v",
@@ -526,7 +532,7 @@ pub fn to_toml(kb: &Keybindings) -> String {
     out.push_str("# Modifiers: ctrl, shift, alt. Keys: a-z, 0-9, f1-f12, up/down/left/right,\n");
     out.push_str("# home/end, pageup/pagedown, tab, enter, esc, space, delete.\n");
     out.push_str("# Only these commands are remappable; typing and cursor motion are fixed.\n");
- out.push_str("# Append \", locked\" to a chord to require the leader key (ctrl+:) first.\n");
+ out.push_str("# Append \", locked\" to a chord to require the leader key (alt+l) first.\n");
     for scope in [Scope::Global, Scope::Editor, Scope::Sidebar] {
         out.push_str(&format!("\n[{}]\n", scope.section()));
         for b in Bindable::ALL.into_iter().filter(|b| b.scope() == scope) {
@@ -665,12 +671,13 @@ mod tests {
  }
  #[test]
  fn leader_chord_parses_and_resolves() {
- // The default leader chord "ctrl+:" is what one physical Ctrl+Shift+;
- // sends on legacy terminals (the higher layer folds ';' back to ':').
+ // Alt+letter, not Ctrl+Shift+<punctuation>: every terminal reports it
+ // distinctly (see the comment on `Bindable::default_chord`'s Leader arm),
+ // unlike the old "ctrl+:" default which most terminals can't send at all.
  let kb = Keybindings::default();
  let r = kb
- .resolve_full(ev(KeyCode::Char(':'), KeyModifiers::CONTROL), Focus::Editor)
- .expect("ctrl+: should resolve to Leader");
+ .resolve_full(ev(KeyCode::Char('l'), KeyModifiers::ALT), Focus::Editor)
+ .expect("alt+l should resolve to Leader");
  assert!(!r.locked);
  assert!(matches!(r.action, Action::Leader));
  }

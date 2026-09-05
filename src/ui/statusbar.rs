@@ -61,8 +61,17 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     right.push_str(focus);
     right.push(' ');
 
+    // A visible badge while the leader (unlock) key is armed — without this,
+    // pressing it gives no feedback at all, so there is no way to tell whether
+    // the keypress even reached the app or whether a locked command is about
+    // to fire (see `Action::Leader`).
+    let leader_seg = if model.leader { " LEADER " } else { "" };
+
     let total = area.width as usize;
-    let rw = err_seg.chars().count() + warn_seg.chars().count() + right.chars().count();
+    let rw = err_seg.chars().count()
+        + warn_seg.chars().count()
+        + leader_seg.chars().count()
+        + right.chars().count();
     // The right block (diagnostic counts, cursor position, focus) always wins the
     // space it needs; the hints are cut to whatever is left.
     let left: String = left.chars().take(total.saturating_sub(rw)).collect();
@@ -83,6 +92,13 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
             Style::new()
                 .fg(model.theme.git_modified)
                 .bg(model.theme.bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            leader_seg,
+            Style::new()
+                .fg(model.theme.statusbar_bg)
+                .bg(model.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(right, base),
