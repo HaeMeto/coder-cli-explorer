@@ -270,6 +270,10 @@ pub struct SearchState {
     pub match_case: bool,
     /// Search .gitignore'd and hidden (dot) files when true (default: skip them).
     pub search_hidden: bool,
+    /// Whether the replace input/buttons are shown at all. Off by default so
+    /// the panel starts as a compact "just find" view instead of always
+    /// showing replace UI up front — toggled via the "[ ] Replace" checkbox.
+    pub replace_mode: bool,
     /// Which field keyboard input goes to.
     pub field: SearchField,
     pub results: Vec<SearchMatch>,

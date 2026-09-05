@@ -220,10 +220,16 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
 
         // ----- Search (typing handled by the focused input widget) -----
         Action::SearchToggleField => {
-            model.sidebar.search.field = match model.sidebar.search.field {
-                SearchField::Query => SearchField::Replace,
-                SearchField::Replace => SearchField::Query,
-            };
+            let s = &mut model.sidebar.search;
+            // Tab into the replace field only when it is actually shown — with
+            // replace mode off there is nothing to switch to, so this is a
+            // no-op rather than routing focus to a field that isn't drawn.
+            if s.replace_mode {
+                s.field = match s.field {
+                    SearchField::Query => SearchField::Replace,
+                    SearchField::Replace => SearchField::Query,
+                };
+            }
             Vec::new()
         }
         Action::SearchToggleRegex => {
@@ -314,5 +320,32 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             }
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::model::SearchField;
+
+    #[test]
+    fn search_tab_does_not_focus_the_hidden_replace_field() {
+        // With replace mode off (the default), the replace row isn't drawn at
+        // all — Tab must stay on Query rather than routing focus to a field
+        // the user can't see.
+        let mut model = Model::new(std::env::temp_dir());
+        assert!(!model.sidebar.search.replace_mode);
+        apply_action(&mut model, Action::SearchToggleField);
+        assert_eq!(model.sidebar.search.field, SearchField::Query);
+    }
+
+    #[test]
+    fn search_tab_cycles_fields_once_replace_mode_is_on() {
+        let mut model = Model::new(std::env::temp_dir());
+        model.sidebar.search.replace_mode = true;
+        apply_action(&mut model, Action::SearchToggleField);
+        assert_eq!(model.sidebar.search.field, SearchField::Replace);
+        apply_action(&mut model, Action::SearchToggleField);
+        assert_eq!(model.sidebar.search.field, SearchField::Query);
     }
 }
