@@ -1356,6 +1356,11 @@ impl Model {
         s.trim_trailing_whitespace = config.trim_trailing_whitespace;
         s.insert_final_newline = config.insert_final_newline;
         s.inline_diagnostics = config.inline_diagnostics;
+        // CODER_ASCII still wins when set (a quick one-off override); otherwise
+        // the persisted Settings-panel toggle governs.
+        if std::env::var("CODER_ASCII").is_err() {
+            self.ascii_icons = config.ascii_icons;
+        }
         self.extensions =
             crate::services::extensions::ExtensionRegistry::from_config(&config.languages);
     }
@@ -1370,6 +1375,7 @@ impl Model {
             trim_trailing_whitespace: s.trim_trailing_whitespace,
             insert_final_newline: s.insert_final_newline,
             inline_diagnostics: s.inline_diagnostics,
+            ascii_icons: self.ascii_icons,
             languages: self.extensions.to_language_configs(),
         }
     }

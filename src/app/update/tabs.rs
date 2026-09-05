@@ -206,6 +206,10 @@ pub(super) fn activate_settings(model: &mut Model) -> Vec<Cmd> {
             ));
             Vec::new()
         }
+        SettingsItem::AsciiIcons => {
+            model.ascii_icons = !model.ascii_icons;
+            persist_config(model)
+        }
         SettingsItem::EditKeybindings => open_keybindings(model),
         SettingsItem::EditConfig => open_config(model),
     }
@@ -392,5 +396,30 @@ pub(super) fn open_path_at(model: &mut Model, path: PathBuf, line: usize) -> Vec
             model.pending_goto = Some((path.clone(), line));
         }
         vec![Cmd::ReadFile(path)]
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use crate::ui::sidebar::SettingsItem;
+
+    #[test]
+    fn ascii_icons_toggle_flips_and_persists() {
+        let mut model = Model::new(std::env::temp_dir());
+        assert!(!model.ascii_icons, "default is Nerd Font icons");
+        let idx = crate::ui::sidebar::SETTINGS_ITEMS
+            .iter()
+            .position(|i| *i == SettingsItem::AsciiIcons)
+            .unwrap();
+        model.sidebar.settings_selected = idx;
+
+        let cmds = activate_settings(&mut model);
+        assert!(model.ascii_icons, "first activation turns it on");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+
+        let cmds = activate_settings(&mut model);
+        assert!(!model.ascii_icons, "second activation turns it back off");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
     }
 }
