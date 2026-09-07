@@ -6,6 +6,13 @@ on:
       - "v*.*.*"
   workflow_dispatch: {}
 
+# The repo's default Actions token permission is read-only, so every
+# release-upload step (svenstaro/upload-release-action, which creates the
+# GitHub Release on first upload) failed with a 404 trying to create it.
+# Declaring this explicitly overrides that default for this workflow only.
+permissions:
+  contents: write
+
 jobs:
   # Build .deb / .rpm inside a Debian 12 (bookworm) container so the produced
   # packages are linked against a low glibc (2.36) and run on Debian 12+ and
