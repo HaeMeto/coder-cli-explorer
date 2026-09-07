@@ -15,9 +15,25 @@ fn on_selected_row(model: &mut Model, f: impl Fn(&mut Model, usize) -> Vec<Cmd>)
 pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
     match action {
         Action::Quit => {
-            model.should_quit = true;
+            let dirty = model.tabs.iter().filter(|t| t.buffer.dirty).count();
+            if dirty > 0 {
+                let plural = if dirty == 1 { "file has" } else { "files have" };
+                model.dialog = Some(Dialog::ask_save(
+                    "Unsaved changes".to_string(),
+                    format!("{dirty} {plural} unsaved changes. Save before quitting?"),
+                    DialogAction::QuitPrompt,
+                ));
+            } else {
+                model.should_quit = true;
+            }
             Vec::new()
         }
+ Action::Leader => {
+ // Enter leader/unlock mode: the next locked command chord fires
+ // directly instead of falling through to typing/motion.
+ model.leader = true;
+ Vec::new()
+ }
         Action::ToggleSidebar => {
             model.layout.sidebar_open = !model.layout.sidebar_open;
             if !model.layout.sidebar_open
@@ -61,7 +77,17 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             // Cheap whitespace formatting runs synchronously first.
             apply_format_on_save(model);
             let Some(path) = model.active_buffer().and_then(|b| b.path.clone()) else {
-                model.notify("No file path to save to".to_string());
+                // No backing file yet (an untitled scratch buffer): ask where
+                // to save it instead of silently doing nothing.
+                let Some(i) = model.active_tab else {
+                    return Vec::new();
+                };
+                model.dialog = Some(Dialog::input(
+                    "Save As".to_string(),
+                    "Path (relative to the workspace root, or absolute):".to_string(),
+                    String::new(),
+                    DialogAction::SaveAs(i),
+                ));
                 return Vec::new();
             };
             // When format-on-save is on and the language has a formatter (LSP or
@@ -175,13 +201,10 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 }
             Vec::new()
         }
-        Action::Paste => {
-            let text = read_clipboard(model);
-            if !text.is_empty() {
-                return mutate(model, |b| b.insert_paste(&text));
-            }
-            Vec::new()
-        }
+ Action::Paste => {
+ let text = read_clipboard(model);
+ paste_into_editor(model, &text)
+ }
 
         // ----- Sidebar navigation -----
         // In the Git panel the arrows drive the change list, so they stay put
@@ -212,15 +235,22 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // ----- File tree entry management (Files panel only) -----
         Action::NewFile => on_selected_row(model, |m, i| new_entry_dialog(m, i, false)),
         Action::NewFolder => on_selected_row(model, |m, i| new_entry_dialog(m, i, true)),
+        Action::NewUntitledFile => new_untitled_tab(model),
         Action::RenameEntry => on_selected_row(model, rename_dialog),
         Action::DeleteEntry => on_selected_row(model, delete_dialog),
 
         // ----- Search (typing handled by the focused input widget) -----
         Action::SearchToggleField => {
-            model.sidebar.search.field = match model.sidebar.search.field {
-                SearchField::Query => SearchField::Replace,
-                SearchField::Replace => SearchField::Query,
-            };
+            let s = &mut model.sidebar.search;
+            // Tab into the replace field only when it is actually shown — with
+            // replace mode off there is nothing to switch to, so this is a
+            // no-op rather than routing focus to a field that isn't drawn.
+            if s.replace_mode {
+                s.field = match s.field {
+                    SearchField::Query => SearchField::Replace,
+                    SearchField::Replace => SearchField::Query,
+                };
+            }
             Vec::new()
         }
         Action::SearchToggleRegex => {
@@ -263,6 +293,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // ----- In-editor find / replace (typing handled by the input widget) -----
         Action::OpenFind => open_find(model, false),
         Action::OpenFindReplace => open_find(model, true),
+ Action::OpenQuickbar => open_quickbar(model),
         Action::FindNext => {
             find_step(model, 1);
             Vec::new()
@@ -310,5 +341,32 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             }
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::model::SearchField;
+
+    #[test]
+    fn search_tab_does_not_focus_the_hidden_replace_field() {
+        // With replace mode off (the default), the replace row isn't drawn at
+        // all — Tab must stay on Query rather than routing focus to a field
+        // the user can't see.
+        let mut model = Model::new(std::env::temp_dir());
+        assert!(!model.sidebar.search.replace_mode);
+        apply_action(&mut model, Action::SearchToggleField);
+        assert_eq!(model.sidebar.search.field, SearchField::Query);
+    }
+
+    #[test]
+    fn search_tab_cycles_fields_once_replace_mode_is_on() {
+        let mut model = Model::new(std::env::temp_dir());
+        model.sidebar.search.replace_mode = true;
+        apply_action(&mut model, Action::SearchToggleField);
+        assert_eq!(model.sidebar.search.field, SearchField::Replace);
+        apply_action(&mut model, Action::SearchToggleField);
+        assert_eq!(model.sidebar.search.field, SearchField::Query);
     }
 }

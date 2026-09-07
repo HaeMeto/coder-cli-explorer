@@ -138,6 +138,20 @@ impl TextInputState {
         }
     }
 
+    /// Inserts a pasted block at the caret in one edit. `'\r'` is dropped;
+    /// `'\n'` is kept only when `multiline` (the git commit box), else folded to
+    /// a space so a multi-line paste still lands as one line instead of losing
+    /// everything after the first newline.
+    pub fn insert_paste(&mut self, text: &str, multiline: bool) {
+        for c in text.chars() {
+            match c {
+                '\r' => continue,
+                '\n' if !multiline => self.insert_char(' '),
+                c => self.insert_char(c),
+            }
+        }
+    }
+
     // ----- editing -----
 
     /// Inserts `c` at the caret.
@@ -284,6 +298,20 @@ mod tests {
         s.cursor = 0;
         s.backspace(); // at start: no-op
         assert_eq!(s.content(), "a");
+    }
+
+    #[test]
+    fn paste_folds_newlines_on_single_line_input() {
+        let mut s = TextInputState::default();
+        s.insert_paste("a\r\nb\nc", false);
+        assert_eq!(s.content(), "a b c", "CR dropped, LF folded to a space");
+    }
+
+    #[test]
+    fn paste_keeps_newlines_on_multiline_input() {
+        let mut s = TextInputState::default();
+        s.insert_paste("a\r\nb", true);
+        assert_eq!(s.content(), "a\nb", "CR dropped, LF kept");
     }
 
     #[test]

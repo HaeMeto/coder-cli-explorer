@@ -1,5 +1,5 @@
-//! Settings panel: quick links to the editable config files (top) and the
-//! reset-to-defaults actions (bottom), separated by a blank row.
+//! Settings panel: quick links to the editable config files, an inline
+//! toggle, and the reset-to-defaults actions (bottom), separated by a blank row.
 //!
 //! The gear no longer opens `config.toml` directly — it opens this panel.
 
@@ -18,30 +18,42 @@ use super::panel_area;
 pub enum SettingsItem {
     EditKeybindings,
     EditConfig,
+    /// Toggle: plain ASCII glyphs instead of Nerd Font / Codicon icons — the
+    /// escape hatch for a terminal font that doesn't bundle those Private-Use
+    /// codepoints (they render as tiny fallback/placeholder glyphs then).
+    AsciiIcons,
     ResetKeybindings,
     ResetConfig,
 }
 
-/// The actionable rows, in selection order (Edit group, then Reset group).
+/// The actionable rows, in selection order (Edit group, toggle, Reset group).
 /// Selection (`settings_selected`) and mouse hit-testing index into this array.
-pub const SETTINGS_ITEMS: [SettingsItem; 4] = [
+pub const SETTINGS_ITEMS: [SettingsItem; 5] = [
     SettingsItem::EditKeybindings,
     SettingsItem::EditConfig,
+    SettingsItem::AsciiIcons,
     SettingsItem::ResetKeybindings,
     SettingsItem::ResetConfig,
 ];
 
-/// Visual layout, top to bottom: the two edit rows, a blank spacer, the two
-/// reset rows. `Some(i)` is an actionable row indexing `SETTINGS_ITEMS`; `None`
-/// is the spacer. Render and hit-testing both walk this so they stay aligned.
-const LAYOUT: [Option<usize>; 5] = [Some(0), Some(1), None, Some(2), Some(3)];
+/// Visual layout, top to bottom: the two edit rows, the toggle, a blank
+/// spacer, the two reset rows. `Some(i)` is an actionable row indexing
+/// `SETTINGS_ITEMS`; `None` is the spacer. Render and hit-testing both walk
+/// this so they stay aligned.
+const LAYOUT: [Option<usize>; 6] = [Some(0), Some(1), Some(2), None, Some(3), Some(4)];
 
-fn label(item: SettingsItem) -> &'static str {
+/// Row label. A `String` (not `&'static str`) because the toggle row's
+/// checkbox state depends on the model.
+fn label(item: SettingsItem, model: &Model) -> String {
     match item {
-        SettingsItem::EditKeybindings => "Edit keybindings.toml",
-        SettingsItem::EditConfig => "Edit config.toml",
-        SettingsItem::ResetKeybindings => "Reset keybindings to defaults",
-        SettingsItem::ResetConfig => "Reset config to defaults",
+        SettingsItem::EditKeybindings => "Edit keybindings.toml".to_string(),
+        SettingsItem::EditConfig => "Edit config.toml".to_string(),
+        SettingsItem::AsciiIcons => format!(
+            "[{}] ASCII icons (no Nerd Font needed)",
+            if model.ascii_icons { "x" } else { " " }
+        ),
+        SettingsItem::ResetKeybindings => "Reset keybindings to defaults".to_string(),
+        SettingsItem::ResetConfig => "Reset config to defaults".to_string(),
     }
 }
 
@@ -64,7 +76,8 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         };
         let item = SETTINGS_ITEMS[i];
         let selected = i == sel;
-        // Reset rows get a ⟲ marker; edit rows are indented level with the text.
+        // Reset rows get a ⟲ marker; the toggle's own "[x]" is its indent;
+        // plain edit rows are indented level with the text.
         let icon = if is_reset(item) {
             if ascii { "R " } else { "\u{27f2} " }
         } else {
@@ -83,7 +96,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         lines.push(
             Line::from(vec![
                 Span::styled(icon, Style::new().fg(model.theme.accent)),
-                Span::styled(label(item), text_style),
+                Span::styled(label(item, model), text_style),
             ])
             .style(line_style),
         );

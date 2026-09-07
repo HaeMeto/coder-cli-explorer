@@ -38,6 +38,10 @@ pub enum Action {
     Format,
     /// Open the editable keybindings file in the editor (Alt+7).
     ShowShortcuts,
+    /// Open a fresh "Untitled-N" scratch buffer (Ctrl+N from the editor) — no
+    /// backing file until it is saved. Distinct from `NewFile` below, which
+    /// creates a real file on disk from the sidebar's file tree.
+    NewUntitledFile,
 
     // Sidebar navigation
     NavUp,
@@ -67,6 +71,9 @@ pub enum Action {
     // In-editor find / replace widget (text editing handled by the input widget)
     OpenFind,
     OpenFindReplace,
+
+ // Command palette / quickbar overlay
+ OpenQuickbar,
     FindNext,
     FindPrev,
     FindToggleField,
@@ -74,6 +81,9 @@ pub enum Action {
     // Terminal raw input
     PtyInput(Vec<u8>),
 
+ /// Toggle the "leader" state: the next locked command fires directly instead
+ /// of waiting for an explicit unlock (a nested/leader-key command mode).
+ Leader,
     Escape,
 }
 
@@ -91,15 +101,21 @@ pub enum Motion {
     WordRight,
 }
 
-pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus) -> Option<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) -> Option<Action> {
+ let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+ let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // User-editable command shortcuts (quit, save, copy, new file, …) win first.
-    // Whatever they don't claim falls through to the fixed typing/motion below.
-    if let Some(action) = keys.resolve(key, focus) {
-        return Some(action);
-    }
+ // User-editable command shortcuts (quit, save, copy, new file, ...) win first.
+ // The locked flag is resolved here: a locked command only fires while the
+ // leader (unlock) key is held, otherwise it returns `None` so the keystroke
+ // falls through to typing/motion below.
+ if let Some(full) = keys.resolve_full(key, focus) {
+ if full.locked && !unlock {
+ return None;
+ }
+ return Some(full.action);
+ }
+
 
     match focus {
         Focus::Terminal => resolve_terminal(key, ctrl, shift),

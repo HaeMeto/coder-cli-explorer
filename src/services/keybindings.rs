@@ -40,6 +40,7 @@ pub enum Bindable {
     Find,
     Replace,
     Shortcuts,
+ Quickbar,
     Explorer,
     Search,
     Git,
@@ -47,6 +48,8 @@ pub enum Bindable {
     Themes,
     Settings,
     Rename,
+    /// The unlock (leader) key: press it, then a locked command chord.
+    Leader,
     // Editor focus
     Copy,
     Cut,
@@ -62,6 +65,9 @@ pub enum Bindable {
     NewFile,
     NewFolder,
     DeleteEntry,
+    /// A fresh "Untitled-N" scratch buffer, typed into first and named on
+    /// save — distinct from `NewFile`, which creates a real file on disk.
+    NewUntitledFile,
 }
 
 /// Which focus modes a binding fires in.
@@ -96,7 +102,7 @@ impl Scope {
 
 impl Bindable {
     /// Every command, in file order (also the TOML write order).
-    const ALL: [Bindable; 30] = [
+    const ALL: [Bindable; 33] = [
         Bindable::Quit,
         Bindable::ToggleSidebar,
         Bindable::ToggleTerminal,
@@ -107,6 +113,7 @@ impl Bindable {
         Bindable::Find,
         Bindable::Replace,
         Bindable::Shortcuts,
+ Bindable::Quickbar,
         Bindable::Explorer,
         Bindable::Search,
         Bindable::Git,
@@ -114,6 +121,7 @@ impl Bindable {
         Bindable::Themes,
         Bindable::Settings,
         Bindable::Rename,
+ Bindable::Leader,
         Bindable::Copy,
         Bindable::Cut,
         Bindable::Paste,
@@ -127,6 +135,7 @@ impl Bindable {
         Bindable::NewFile,
         Bindable::NewFolder,
         Bindable::DeleteEntry,
+        Bindable::NewUntitledFile,
     ];
 
     /// Stable TOML key name.
@@ -142,6 +151,7 @@ impl Bindable {
             Bindable::Find => "find",
             Bindable::Replace => "replace",
             Bindable::Shortcuts => "shortcuts",
+ Bindable::Quickbar => "quickbar",
             Bindable::Explorer => "explorer",
             Bindable::Search => "search",
             Bindable::Git => "git",
@@ -149,6 +159,7 @@ impl Bindable {
             Bindable::Themes => "themes",
             Bindable::Settings => "settings",
             Bindable::Rename => "rename",
+ Bindable::Leader => "leader",
             Bindable::Copy => "copy",
             Bindable::Cut => "cut",
             Bindable::Paste => "paste",
@@ -162,6 +173,7 @@ impl Bindable {
             Bindable::NewFile => "new_file",
             Bindable::NewFolder => "new_folder",
             Bindable::DeleteEntry => "delete_entry",
+            Bindable::NewUntitledFile => "new_untitled_file",
         }
     }
 
@@ -176,7 +188,8 @@ impl Bindable {
             | Bindable::Completion
             | Bindable::Format
             | Bindable::MoveLineUp
-            | Bindable::MoveLineDown => Scope::Editor,
+            | Bindable::MoveLineDown
+            | Bindable::NewUntitledFile => Scope::Editor,
             Bindable::NewFile | Bindable::NewFolder | Bindable::DeleteEntry => Scope::Sidebar,
             _ => Scope::Global,
         }
@@ -196,6 +209,7 @@ impl Bindable {
             Bindable::Find => "ctrl+f",
             Bindable::Replace => "ctrl+h",
             Bindable::Shortcuts => "alt+7",
+ Bindable::Quickbar => "ctrl+p",
             // Panels use Alt+digit: legacy terminals (GNOME Terminal / VTE) can't
             // send Ctrl+Shift+<letter> distinctly — the Shift bit collapses so
             // e.g. Ctrl+Shift+S is byte-identical to Ctrl+S (Save). Alt+digit
@@ -207,6 +221,13 @@ impl Bindable {
             Bindable::Themes => "alt+5",
             Bindable::Settings => "alt+6",
             Bindable::Rename => "f2",
+ // Alt+letter, not Ctrl+Shift+<punctuation>: like the Alt+digit panel
+ // shortcuts above, this is a distinct ESC-prefixed sequence every
+ // terminal reports. Ctrl+Shift+; (the old default, "ctrl+:") has no
+ // standard ASCII control code, so most terminals without the kitty
+ // keyboard protocol send it as a bare ';'/':' with no Ctrl bit at all —
+ // the leader key would silently never fire.
+ Bindable::Leader => "alt+l",
             Bindable::Copy => "ctrl+c",
             Bindable::Cut => "ctrl+x",
             Bindable::Paste => "ctrl+v",
@@ -220,6 +241,10 @@ impl Bindable {
             Bindable::NewFile => "ctrl+n",
             Bindable::NewFolder => "alt+shift+n",
             Bindable::DeleteEntry => "delete",
+            // Same chord as the sidebar's `NewFile`, but a different scope
+            // (Editor vs Sidebar), so the two never collide — whichever is
+            // focused decides which one fires.
+            Bindable::NewUntitledFile => "ctrl+n",
         }
     }
 
@@ -236,6 +261,7 @@ impl Bindable {
             Bindable::Find => Action::OpenFind,
             Bindable::Replace => Action::OpenFindReplace,
             Bindable::Shortcuts => Action::ShowShortcuts,
+ Bindable::Quickbar => Action::OpenQuickbar,
             Bindable::Explorer => Action::SelectPanel(Panel::Files),
             Bindable::Search => Action::SelectPanel(Panel::Search),
             Bindable::Git => Action::SelectPanel(Panel::Git),
@@ -243,6 +269,7 @@ impl Bindable {
             Bindable::Themes => Action::SelectPanel(Panel::Themes),
             Bindable::Settings => Action::SelectPanel(Panel::Settings),
             Bindable::Rename => Action::RenameEntry,
+ Bindable::Leader => Action::Leader,
             Bindable::Copy => Action::Copy,
             Bindable::Cut => Action::Cut,
             Bindable::Paste => Action::Paste,
@@ -256,8 +283,17 @@ impl Bindable {
             Bindable::NewFile => Action::NewFile,
             Bindable::NewFolder => Action::NewFolder,
             Bindable::DeleteEntry => Action::DeleteEntry,
+            Bindable::NewUntitledFile => Action::NewUntitledFile,
         }
     }
+
+ /// Whether the command is *locked* behind the leader key by default.
+ /// Locking is **opt-in**: by default every command fires directly (quick).
+ /// A command is only locked (needs the leader key first) when its TOML
+ /// entry carries a `, locked` suffix, e.g. `quit = "ctrl+q, locked"`.
+ fn default_locked(self) -> bool {
+ false
+ }
 
     fn by_name(section: &str, name: &str) -> Option<Bindable> {
         Bindable::ALL
@@ -286,12 +322,20 @@ impl Chord {
                 shift = true;
                 KeyCode::Tab
             }
-            KeyCode::Char(c) => {
-                if c.is_ascii_uppercase() {
-                    shift = true;
-                }
-                KeyCode::Char(c.to_ascii_lowercase())
-            }
+ KeyCode::Char(c) => {
+   if c.is_ascii_uppercase() {
+     shift = true;
+   }
+   // ':' is Shift+';'; fold the physical `;` back so a "ctrl+:"
+   // binding matches the Ctrl+Shift+; that legacy terminals send.
+   let lower = c.to_ascii_lowercase();
+   if lower == ';' {
+     shift = true;
+     KeyCode::Char(':')
+   } else {
+     KeyCode::Char(lower)
+   }
+ }
             other => other,
         };
         Chord {
@@ -392,9 +436,16 @@ fn key_string(code: KeyCode) -> String {
     }
 }
 
-/// The loaded shortcuts: an ordered `(command, chord)` table.
+/// The loaded shortcuts: an ordered `(command, chord, locked)` table.
+/// A resolved command binding: the `Action` plus whether it is locked
+/// (needs the leader key) per the active keymap.
+pub struct Resolved {
+ pub action: Action,
+ pub locked: bool,
+}
+
 pub struct Keybindings {
-    binds: Vec<(Bindable, Chord)>,
+ binds: Vec<(Bindable, Chord, bool)>,
 }
 
 impl Default for Keybindings {
@@ -402,7 +453,9 @@ impl Default for Keybindings {
         let binds = Bindable::ALL
             .into_iter()
             // Defaults are known-valid, so `parse` never fails here.
-            .filter_map(|b| Chord::parse(b.default_chord()).map(|c| (b, c)))
+ .filter_map(|b| {
+ Chord::parse(b.default_chord()).map(|c| (b, c, b.default_locked()))
+ })
             .collect();
         Keybindings { binds }
     }
@@ -411,17 +464,28 @@ impl Default for Keybindings {
 impl Keybindings {
     /// Resolves a key press to its bound `Action` for the given focus, or `None`
     /// (letting the hardcoded typing/motion fallback take over).
-    pub fn resolve(&self, key: KeyEvent, focus: Focus) -> Option<Action> {
-        let chord = Chord::from_event(key);
-        self.binds
-            .iter()
-            .find(|(b, c)| *c == chord && b.scope().matches(focus))
-            .map(|(b, _)| b.to_action())
-    }
+ pub fn resolve(&self, key: KeyEvent, focus: Focus) -> Option<Action> {
+ self.resolve_full(key, focus).map(|r| r.action)
+ }
 
-    fn set(&mut self, b: Bindable, chord: Chord) {
-        if let Some(entry) = self.binds.iter_mut().find(|(x, _)| *x == b) {
-            entry.1 = chord;
+ /// Like `resolve`, but also reports the `locked` flag so the caller can gate
+ /// the action behind the leader key.
+ pub fn resolve_full(&self, key: KeyEvent, focus: Focus) -> Option<Resolved> {
+ let chord = Chord::from_event(key);
+ self.binds
+ .iter()
+ .find(|(b, c, _)| *c == chord && b.scope().matches(focus))
+ .map(|(b, _, locked)| Resolved {
+ action: b.to_action(),
+ locked: *locked,
+ })
+ }
+
+ fn set(&mut self, b: Bindable, chord: Chord, locked: Option<bool>) {
+ let default_locked = b.default_locked();
+ if let Some(entry) = self.binds.iter_mut().find(|(x, _, _)| *x == b) {
+ entry.1 = chord;
+ entry.2 = locked.unwrap_or(default_locked);
         }
     }
 }
@@ -447,10 +511,17 @@ pub fn parse(text: &str) -> Keybindings {
             let Some(chord_str) = chord_val.as_str() else {
                 continue;
             };
+            // Optional "<chord>, quick|locked" suffix overrides the default, so a
+            // command may be locked behind the leader (or freed) on a per-command
+            // basis: e.g. `format = "ctrl+alt+f, locked"`.
+            let (chord_part, locked_override) = match chord_str.split_once(',') {
+                Some((c, flag)) => (c.trim(), Some(flag.trim() == "locked")),
+                _ => (chord_str, None),
+            };
             if let Some(b) = Bindable::by_name(section, name)
-                && let Some(chord) = Chord::parse(chord_str)
+                && let Some(chord) = Chord::parse(chord_part)
             {
-                kb.set(b, chord);
+                kb.set(b, chord, locked_override);
             }
         }
     }
@@ -462,8 +533,8 @@ pub fn to_toml(kb: &Keybindings) -> String {
     let chord_of = |b: Bindable| {
         kb.binds
             .iter()
-            .find(|(x, _)| *x == b)
-            .map(|(_, c)| c.to_chord_string())
+ .find(|(x, _, _)| *x == b)
+            .map(|(_, c, _)| c.to_chord_string())
             .unwrap_or_default()
     };
     let mut out = String::new();
@@ -472,10 +543,17 @@ pub fn to_toml(kb: &Keybindings) -> String {
     out.push_str("# Modifiers: ctrl, shift, alt. Keys: a-z, 0-9, f1-f12, up/down/left/right,\n");
     out.push_str("# home/end, pageup/pagedown, tab, enter, esc, space, delete.\n");
     out.push_str("# Only these commands are remappable; typing and cursor motion are fixed.\n");
+ out.push_str("# Append \", locked\" to a chord to require the leader key (alt+l) first.\n");
     for scope in [Scope::Global, Scope::Editor, Scope::Sidebar] {
         out.push_str(&format!("\n[{}]\n", scope.section()));
         for b in Bindable::ALL.into_iter().filter(|b| b.scope() == scope) {
-            out.push_str(&format!("{} = \"{}\"\n", b.name(), chord_of(b)));
+            let locked = kb.binds.iter().find(|(x, _, _)| *x == b).map(|(_, _, l)| *l).unwrap_or_else(|| b.default_locked());
+ // Write an explicit ", quick"/", locked" suffix only when it differs from the
+ // command's default, so the generated file stays minimal and readable.
+ let suffix = if locked != b.default_locked() {
+ if locked { ", locked" } else { ", quick" }
+ } else { "" };
+ out.push_str(&format!("{name} = \"{chord}{suffix}\"\n", name = b.name(), chord = chord_of(b), suffix = suffix));
         }
     }
     out
@@ -574,4 +652,87 @@ mod tests {
             Some(Action::Quit)
         ));
     }
+
+ #[test]
+ fn quickbar_binding_is_remappable() {
+ // The out-of-the-box chord opens the palette.
+ let default = Keybindings::default();
+ assert!(matches!(
+ default
+ .resolve(ev(KeyCode::Char('p'), KeyModifiers::CONTROL), Focus::Editor),
+ Some(Action::OpenQuickbar)
+ ));
+ // Declaring a different chord in the file overrides it, and the old
+ // chord stops working, so editing keybindings.toml re-binds the palette.
+ let remapped = parse("[global]\nquickbar = \"ctrl+k\"\n");
+ assert!(matches!(
+ remapped
+ .resolve(ev(KeyCode::Char('k'), KeyModifiers::CONTROL), Focus::Editor),
+ Some(Action::OpenQuickbar)
+ ));
+ assert!(remapped
+ .resolve(ev(KeyCode::Char('p'), KeyModifiers::CONTROL), Focus::Editor)
+ .is_none());
+ // Global scope resolves from the sidebar focus too (palette is open).
+ assert!(matches!(
+ remapped
+ .resolve(ev(KeyCode::Char('k'), KeyModifiers::CONTROL), Focus::Sidebar),
+ Some(Action::OpenQuickbar)
+ ));
+ }
+ #[test]
+ fn leader_chord_parses_and_resolves() {
+ // Alt+letter, not Ctrl+Shift+<punctuation>: every terminal reports it
+ // distinctly (see the comment on `Bindable::default_chord`'s Leader arm),
+ // unlike the old "ctrl+:" default which most terminals can't send at all.
+ let kb = Keybindings::default();
+ let r = kb
+ .resolve_full(ev(KeyCode::Char('l'), KeyModifiers::ALT), Focus::Editor)
+ .expect("alt+l should resolve to Leader");
+ assert!(!r.locked);
+ assert!(matches!(r.action, Action::Leader));
+ }
+
+ #[test]
+ fn defaults_are_quick_without_leader() {
+ // Every default binding fires directly; quit/save do NOT need the leader.
+ let kb = Keybindings::default();
+ let quit = kb
+ .resolve_full(ev(KeyCode::Char('q'), KeyModifiers::CONTROL), Focus::Editor)
+ .expect("ctrl+q resolves");
+ assert!(!quit.locked, "default quit must be quick");
+ let save = kb
+ .resolve_full(ev(KeyCode::Char('s'), KeyModifiers::CONTROL), Focus::Editor)
+ .expect("ctrl+s resolves");
+ assert!(!save.locked, "default save must be quick");
+ }
+
+ #[test]
+ fn locked_requires_unlock_through_keymap_resolve() {
+ // A command marked `, locked` only fires through keymap::resolve when the
+ // unlock (leader) flag is set; otherwise it returns None so the keystroke
+ // falls through to typing/motion.
+ let kb = parse("[global]\nquit = \"ctrl+q, locked\"\n");
+ let quick = kb
+ .resolve_full(ev(KeyCode::Char('q'), KeyModifiers::CONTROL), Focus::Editor)
+ .expect("ctrl+q resolves");
+ assert!(quick.locked, "explicitly locked command reports locked");
+
+ let locked_no_unlock = crate::core::keymap::resolve(
+ &kb,
+ ev(KeyCode::Char('q'), KeyModifiers::CONTROL),
+ Focus::Editor,
+ false,
+ );
+ assert!(locked_no_unlock.is_none(), "locked + no unlock falls through");
+
+ let locked_unlock = crate::core::keymap::resolve(
+ &kb,
+ ev(KeyCode::Char('q'), KeyModifiers::CONTROL),
+ Focus::Editor,
+ true,
+ );
+ assert!(matches!(locked_unlock, Some(Action::Quit)), "locked + unlock fires");
+ }
+
 }

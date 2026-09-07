@@ -69,19 +69,7 @@ fn open_panel(model: &mut Model, p: Panel, collapse_if_active: bool) -> Vec<Cmd>
 
 pub(super) fn close_active_tab(model: &mut Model) -> Vec<Cmd> {
     if let Some(i) = model.active_tab {
-        if model.tabs[i].buffer.dirty
-            && let Some(ref path) = model.tabs[i].buffer.path
-        {
-            let display = path.display().to_string();
-            model.focus = Focus::Editor;
-            model.dialog = Some(Dialog::ask(
-                "Close tab".to_string(),
-                format!("Changes in '{display}' will be lost. Close anyway?"),
-                DialogAction::CloseTab(i, display),
-            ));
-            return Vec::new();
-        }
-        close_tab(model, i)
+        close_tab_with_dirty_check(model, i)
     } else {
         Vec::new()
     }
@@ -91,10 +79,10 @@ pub(super) fn close_tab_with_dirty_check(model: &mut Model, i: usize) -> Vec<Cmd
     if i >= model.tabs.len() {
         return Vec::new();
     }
-    if model.tabs[i].buffer.dirty
-        && let Some(ref path) = model.tabs[i].buffer.path
-    {
-        let display = path.display().to_string();
+    if model.tabs[i].buffer.dirty {
+        // Untitled buffers have no path but are just as much "unsaved work" —
+        // name the tab by its title (e.g. "Untitled-2") instead of requiring a path.
+        let display = model.tabs[i].title();
         model.focus = Focus::Editor;
         model.dialog = Some(Dialog::ask(
             "Close tab".to_string(),
@@ -145,6 +133,79 @@ pub(super) fn cycle_tab(model: &mut Model, delta: isize) {
     let next = (cur + delta).rem_euclid(n) as usize;
     model.active_tab = Some(next);
     model.focus = Focus::Editor;
+}
+
+/// Creates a fresh "Untitled-N" scratch buffer (`Action::NewUntitledFile`,
+/// Ctrl+N from the editor) — typed into first, named on save.
+pub(super) fn new_untitled_tab(model: &mut Model) -> Vec<Cmd> {
+    let seq = model.next_untitled_seq();
+    let tab = Tab::untitled(crate::services::session::new_untitled_id(), seq);
+    model.tabs.push(tab);
+    model.active_tab = Some(model.tabs.len() - 1);
+    model.focus = Focus::Editor;
+    model.invalidate_highlight();
+    Vec::new()
+}
+
+/// Quit confirmation "Save": writes every dirty, on-disk tab synchronously —
+/// bypassing the usual async `Cmd::WriteFile` — so quitting right after can't
+/// race the write and lose it (the same justified IO-in-`update` carve-out
+/// `Msg::ReplaceDone` already uses for its own short synchronous read). This
+/// skips the async LSP/tool formatter pass a single-file Ctrl+S runs; only the
+/// plain trim/final-newline formatting applies. An untitled buffer has no path
+/// to write to and stays dirty — the session checkpoint preserves it either way.
+pub(super) fn save_all_and_quit(model: &mut Model) -> Vec<Cmd> {
+    let s = &model.sidebar.settings;
+    let (trim, final_nl, format_on_save) =
+        (s.trim_trailing_whitespace, s.insert_final_newline, s.format_on_save);
+    for tab in model.tabs.iter_mut() {
+        if !tab.buffer.dirty || tab.read_only || tab.notice.is_some() {
+            continue;
+        }
+        let Some(path) = tab.buffer.path.clone() else {
+            continue; // untitled: nothing to write to, stays dirty
+        };
+        if format_on_save {
+            let formatted = format_text(&tab.buffer.full_text(), trim, final_nl);
+            tab.buffer.replace_all(&formatted);
+        }
+        if std::fs::write(&path, tab.buffer.full_text()).is_ok() {
+            tab.buffer.mark_saved();
+        }
+    }
+    model.should_quit = true;
+    Vec::new()
+}
+
+/// Quit confirmation "Don't Save": quits without writing dirty tabs back to
+/// their real files. Nothing is lost — the debounced session checkpoint
+/// already holds their content, and `main::run` flushes one final checkpoint
+/// before the process exits.
+pub(super) fn discard_and_quit(model: &mut Model) -> Vec<Cmd> {
+    model.should_quit = true;
+    Vec::new()
+}
+
+/// Confirms a Save As dialog for a pathless (untitled) tab: resolves the typed
+/// name against the workspace root when relative, gives the tab that path
+/// (so the async `Msg::FileSaved` that follows can find and mark it clean),
+/// and writes it.
+pub(super) fn save_as(model: &mut Model, tab: usize, name: &str) -> Vec<Cmd> {
+    let name = name.trim();
+    if name.is_empty() {
+        model.notify("Save As: no name entered".to_string());
+        return Vec::new();
+    }
+    let path = PathBuf::from(name);
+    let path = if path.is_absolute() { path } else { model.root.join(path) };
+    let Some(t) = model.tabs.get_mut(tab) else {
+        return Vec::new();
+    };
+    t.buffer.path = Some(path.clone());
+    t.untitled_id = None;
+    t.label = None; // title() now derives from the new path
+    let contents = t.buffer.full_text();
+    vec![Cmd::WriteFile { path, contents }]
 }
 
 pub(super) fn open_path(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
@@ -205,6 +266,10 @@ pub(super) fn activate_settings(model: &mut Model) -> Vec<Cmd> {
                 DialogAction::ResetConfig,
             ));
             Vec::new()
+        }
+        SettingsItem::AsciiIcons => {
+            model.ascii_icons = !model.ascii_icons;
+            persist_config(model)
         }
         SettingsItem::EditKeybindings => open_keybindings(model),
         SettingsItem::EditConfig => open_config(model),
@@ -392,5 +457,115 @@ pub(super) fn open_path_at(model: &mut Model, path: PathBuf, line: usize) -> Vec
             model.pending_goto = Some((path.clone(), line));
         }
         vec![Cmd::ReadFile(path)]
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use crate::ui::sidebar::SettingsItem;
+
+    #[test]
+    fn ascii_icons_toggle_flips_and_persists() {
+        let mut model = Model::new(std::env::temp_dir());
+        assert!(!model.ascii_icons, "default is Nerd Font icons");
+        let idx = crate::ui::sidebar::SETTINGS_ITEMS
+            .iter()
+            .position(|i| *i == SettingsItem::AsciiIcons)
+            .unwrap();
+        model.sidebar.settings_selected = idx;
+
+        let cmds = activate_settings(&mut model);
+        assert!(model.ascii_icons, "first activation turns it on");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+
+        let cmds = activate_settings(&mut model);
+        assert!(!model.ascii_icons, "second activation turns it back off");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    }
+}
+
+#[cfg(test)]
+mod untitled_and_quit_tests {
+    use super::*;
+
+    #[test]
+    fn new_untitled_tab_opens_a_focused_pathless_buffer() {
+        let mut model = Model::new(std::env::temp_dir());
+        new_untitled_tab(&mut model);
+        assert_eq!(model.tabs.len(), 1);
+        assert!(model.tabs[0].buffer.path.is_none());
+        assert!(model.tabs[0].untitled_id.is_some());
+        assert_eq!(model.tabs[0].title(), "Untitled-1");
+        assert_eq!(model.active_tab, Some(0));
+        assert_eq!(model.focus, Focus::Editor);
+
+        // A second one gets the next number, not a repeat.
+        new_untitled_tab(&mut model);
+        assert_eq!(model.tabs[1].title(), "Untitled-2");
+    }
+
+    #[test]
+    fn closing_a_dirty_untitled_tab_asks_first() {
+        let mut model = Model::new(std::env::temp_dir());
+        new_untitled_tab(&mut model);
+        model.tabs[0].buffer.insert_char('x');
+        assert!(model.tabs[0].buffer.dirty);
+
+        let cmds = close_tab_with_dirty_check(&mut model, 0);
+        assert!(cmds.is_empty());
+        assert!(model.dialog.is_some(), "an untitled dirty tab must be confirmed, not silently dropped");
+        assert_eq!(model.tabs.len(), 1, "not closed yet");
+    }
+
+    #[test]
+    fn save_all_and_quit_writes_dirty_files_but_leaves_untitled_buffers_dirty() {
+        let dir = std::env::temp_dir().join(format!("coder-save-all-quit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "old").unwrap();
+
+        let mut model = Model::new(dir.clone());
+        model.tabs.push(Tab::new(Buffer::new(Some(path.clone()), "old")));
+        model.tabs[0].buffer.insert_str("new");
+        assert!(model.tabs[0].buffer.dirty);
+        new_untitled_tab(&mut model); // untitled: nothing to write to
+        model.tabs[1].buffer.insert_str("scratch");
+
+        save_all_and_quit(&mut model);
+        assert!(model.should_quit);
+        assert!(!model.tabs[0].buffer.dirty, "on-disk tab is saved and marked clean");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "newold");
+        assert!(model.tabs[1].buffer.dirty, "untitled buffer has nowhere to write to, stays dirty");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_and_quit_just_quits_without_writing() {
+        let mut model = Model::new(std::env::temp_dir());
+        new_untitled_tab(&mut model);
+        model.tabs[0].buffer.insert_str("draft");
+        discard_and_quit(&mut model);
+        assert!(model.should_quit);
+        assert!(model.tabs[0].buffer.dirty, "content is preserved (via the session checkpoint), just not written to a real file");
+    }
+
+    #[test]
+    fn save_as_gives_an_untitled_tab_a_path_and_writes_it() {
+        let dir = std::env::temp_dir().join(format!("coder-save-as-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut model = Model::new(dir.clone());
+        new_untitled_tab(&mut model);
+        model.tabs[0].buffer.insert_str("hello");
+        let cmds = save_as(&mut model, 0, "notes.txt");
+        assert!(matches!(cmds.as_slice(), [Cmd::WriteFile { .. }]));
+        assert_eq!(model.tabs[0].buffer.path.as_deref(), Some(dir.join("notes.txt").as_path()));
+        assert!(model.tabs[0].untitled_id.is_none(), "no longer keyed as untitled");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

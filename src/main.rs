@@ -12,8 +12,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind, MouseEventKind,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyEventKind, MouseEventKind, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -83,7 +84,18 @@ static KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
 fn setup_terminal() -> Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Bracketed paste makes the terminal wrap a pasted block in
+    // ESC[200~ … ESC[201~ and deliver it as one `Event::Paste(String)`, instead
+    // of a flood of ordinary key events. Without this, a multi-line paste (e.g.
+    // JSON from outside the app) is typed character-by-character and collides
+    // with the editor's auto-indent-on-Enter, producing cascading/staircase
+    // indentation — see `map_event`'s `Event::Paste` arm.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
 
     // Ask the terminal to disambiguate escape codes (kitty keyboard protocol) so
     // modified keys like Ctrl+Tab / Ctrl+Shift+Tab arrive with their modifiers
@@ -104,7 +116,12 @@ fn setup_terminal() -> Result<Tui> {
         if enhanced {
             let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         }
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
         original_hook(info);
     }));
 
@@ -121,6 +138,7 @@ fn restore_terminal(terminal: &mut Tui) -> Result<()> {
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        DisableBracketedPaste,
         LeaveAlternateScreen,
         DisableMouseCapture
     )?;
@@ -161,12 +179,28 @@ async fn run(
         Cmd::LoadGitStatus,
         Cmd::CheckTools(model.extensions.tool_commands()),
     ];
+    // Reopen this workspace's tabs (cursor/scroll, and any unsaved content —
+    // see `services::session`), before an explicit CLI file so the latter can
+    // still dedupe against a tab the session already restored.
+    cmds.extend(update::restore_session(&mut model));
     // Opened with a file: keep the sidebar collapsed (the user opens it when needed)
     // and load the file straight into the editor.
     if let Some(file) = open_file {
         model.layout.sidebar_open = false;
         model.focus = crate::app::model::Focus::Editor;
-        cmds.push(Cmd::ReadFile(file));
+        // Already restored (synchronously — a dirty file small enough to have
+        // kept full text): just focus it instead of reading it a second time
+        // into a duplicate tab.
+        if let Some(i) = model.tab_index_for(&file) {
+            model.active_tab = Some(i);
+        // Already queued for async restore (a clean file, or a large dirty
+        // file stored as a diff): let that load finish, just claim the focus
+        // — explicit CLI intent wins over whatever the session remembered.
+        } else if model.pending_session_restore.contains_key(&file) {
+            model.session_active_path = Some(file);
+        } else {
+            cmds.push(Cmd::ReadFile(file));
+        }
     }
     dispatch(cmds, &model, &tx);
 
@@ -180,6 +214,16 @@ async fn run(
     // due debounce (autocomplete / didChange) and repaint. Keeps the UI live even
     // with no input, and bounds how late a deadline fires to one tick.
     const TICK: Duration = Duration::from_millis(50);
+
+    // Cap on how many already-queued messages are drained before the next
+    // render/should_quit check. A continuous flood — a chatty command running
+    // in the embedded terminal (`cargo build -v`, `ping`, `tail -f`, ...), or a
+    // burst of disk-watch events — can otherwise refill the channel faster than
+    // it empties, so the plain `while let Ok(msg) = rx.try_recv()` never exits:
+    // the screen stops redrawing and even an already-queued Quit/Save sits
+    // unprocessed until the flood stops. Bounding the batch guarantees the loop
+    // comes back to redraw (and check `should_quit`) at least this often.
+    const MAX_DRAIN_PER_TICK: usize = 256;
 
     loop {
         // Fire any debounced work whose deadline elapsed (checked every iteration
@@ -199,16 +243,29 @@ async fn run(
         match tokio::time::timeout(TICK, rx.recv()).await {
             Ok(Some(msg)) => {
                 handle_msg(&mut model, &mut watcher, &tx, msg);
-                // Drain everything else already queued (a keystroke burst, heavy
-                // PTY output, batched async results) before the next render.
-                while let Ok(msg) = rx.try_recv() {
+                // Drain more already-queued messages before the next render (a
+                // keystroke burst, heavy PTY output, batched async results), but
+                // bounded and cut short the moment Quit fires — see
+                // `MAX_DRAIN_PER_TICK` above.
+                let mut drained = 0;
+                while drained < MAX_DRAIN_PER_TICK && !model.should_quit {
+                    let Ok(msg) = rx.try_recv() else { break };
                     handle_msg(&mut model, &mut watcher, &tx, msg);
+                    drained += 1;
                 }
             }
             Ok(None) => break, // channel closed
             Err(_) => {}       // idle tick: just loop and repaint
         }
     }
+    // One last checkpoint on the way out, synchronously (the process exits right
+    // after — an async `Cmd::SaveSession` could get dropped mid-flight along with
+    // every other in-flight task once the tokio runtime shuts down). Covers both
+    // quit paths: "Don't Save" (dirty tabs must still survive to the next launch)
+    // and a clean quit (cursor/scroll positions are worth keeping either way).
+    let mut snapshot = model.session_snapshot();
+    let seen = model.session_seen_generation.unwrap_or(0);
+    let _ = crate::services::session::save(&model.root, &mut snapshot, seen);
     Ok(())
 }
 
@@ -297,6 +354,9 @@ fn map_event(event: Event) -> Vec<Msg> {
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved) => Vec::new(),
         Event::Mouse(m) => vec![Msg::Mouse(m)],
         Event::Resize(w, h) => vec![Msg::Resize(w, h)],
+        // A whole pasted block, delivered atomically thanks to bracketed paste
+        // (see `setup_terminal`) instead of as a flood of individual key events.
+        Event::Paste(text) => vec![Msg::Paste(text)],
         _ => Vec::new(),
     }
 }

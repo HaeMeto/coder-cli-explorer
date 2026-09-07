@@ -343,6 +343,15 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.sidebar.search.field = SearchField::Replace;
                     model.focus = Focus::SearchInput;
                 }
+                Some(SearchHit::ReplaceModeToggle) => {
+                    let s = &mut model.sidebar.search;
+                    s.replace_mode = !s.replace_mode;
+                    // The replace field just disappeared: don't leave focus
+                    // routed to an input that is no longer drawn.
+                    if !s.replace_mode && s.field == SearchField::Replace {
+                        s.field = SearchField::Query;
+                    }
+                }
                 Some(SearchHit::RegexToggle) => {
                     model.sidebar.search.use_regex = !model.sidebar.search.use_regex;
                     return rerun_search(model);
@@ -415,6 +424,11 @@ fn mouse_scroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) 
         model.terminal.scroll_by(-delta);
     } else if a.sidebar_open && rect_contains(a.sidebar, x, y) {
         nav(model, delta.signum());
+        // Scrolling through the Themes panel live-previews each theme the same
+        // way arrow-key nav does (see `nav`'s `Panel::Themes` arm) — it must be
+        // persisted the same way too, or the choice is only visual and reverts
+        // to the last actually-saved theme on the next launch.
+        return post_nav_persist(model);
     }
     Vec::new()
 }
@@ -446,4 +460,33 @@ fn terminal_scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
     // offset = history rows below the viewport top.
     let offset = model.terminal.scrollback_lines.saturating_sub(above);
     model.terminal.scroll_to(offset);
+}
+
+#[cfg(test)]
+mod mouse_scroll_tests {
+    use super::*;
+    use crate::app::model::Panel;
+
+    #[test]
+    fn scrolling_the_themes_panel_persists_like_arrow_nav_does() {
+        // Regression test: scrolling the mouse wheel over the Themes panel must
+        // save the newly-previewed theme (`Cmd::SaveConfig`), the same way
+        // arrow-key navigation already does via `post_nav_persist` — otherwise
+        // the choice is only a live preview that reverts on the next launch.
+        let mut model = Model::new(std::env::temp_dir());
+        model.sidebar.active = Panel::Themes;
+        assert!(
+            model.sidebar.themes.names.len() > 1,
+            "need at least 2 themes for scrolling to change the selection"
+        );
+        let area = full_rect(&model);
+        let a = ui::compute_areas(&model, area);
+
+        let cmds = mouse_scroll(&mut model, &a, a.sidebar.x + 1, a.sidebar.y + 1, 1);
+
+        assert!(
+            cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))),
+            "scrolling the Themes panel must persist the selection"
+        );
+    }
 }

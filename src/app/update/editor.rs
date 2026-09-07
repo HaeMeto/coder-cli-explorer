@@ -34,6 +34,9 @@ pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
         // The change-gutter git diff is intentionally NOT refreshed here: it stays
         // frozen at its last state while editing and only recomputes on save /
         // reload / disk change (see `Model::refresh_git_marks`).
+        // Debounced session checkpoint, so a crash (or a kill) never loses more
+        // than a couple seconds of typing — see `Model::schedule_session_save`.
+        model.schedule_session_save();
         super::lsp::notify_change(model)
     } else {
         Vec::new()
@@ -69,7 +72,7 @@ pub(super) fn apply_format_on_save(model: &mut Model) {
 }
 
 /// Trims trailing whitespace per line and/or ensures a single final newline.
-fn format_text(text: &str, trim: bool, final_nl: bool) -> String {
+pub(super) fn format_text(text: &str, trim: bool, final_nl: bool) -> String {
     let mut result = if trim {
         text.split('\n')
             .map(|l| l.trim_end_matches([' ', '\t']))
@@ -97,6 +100,22 @@ pub(super) fn apply_motion(b: &mut Buffer, motion: Motion, extend: bool, page: u
         Motion::WordLeft => b.move_word_left(extend),
         Motion::WordRight => b.move_word_right(extend),
     }
+}
+
+/// Pastes `text` into the active buffer (a no-op outside `Focus::Editor` or on
+/// a read-only tab — see `mutate`), then runs the language formatter over the
+/// whole document when format-on-paste is enabled. Shared by `Action::Paste`
+/// (Ctrl+V, reads the system/OSC-52 clipboard) and `Msg::Paste` (a terminal
+/// bracketed paste, which already carries the text) so both behave identically.
+pub(super) fn paste_into_editor(model: &mut Model, text: &str) -> Vec<Cmd> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut cmds = mutate(model, |b| b.insert_paste(text));
+    if model.sidebar.settings.format_on_paste {
+        cmds.extend(super::lsp::request_format(model, false));
+    }
+    cmds
 }
 
 pub(super) fn read_clipboard(model: &Model) -> String {

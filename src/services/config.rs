@@ -31,12 +31,14 @@ use toml::Value;
 use crate::core::highlight::DEFAULT_THEME;
 
 /// Top-level keys that are editor settings, not language sections.
-const SETTING_KEYS: [&str; 5] = [
+const SETTING_KEYS: [&str; 7] = [
     "theme",
     "format_on_save",
+    "format_on_paste",
     "trim_trailing_whitespace",
     "insert_final_newline",
     "inline_diagnostics",
+    "ascii_icons",
 ];
 
 /// A single language's tooling, as written in its `[<name>]` section. The
@@ -60,7 +62,9 @@ pub struct Config {
     /// Selected theme name.
     pub theme: String,
     /// Run the enabled format actions when saving.
-    pub format_on_save: bool,
+ pub format_on_save: bool,
+ /// Run the language formatter after a paste (off by default).
+ pub format_on_paste: bool,
     /// Strip trailing whitespace on save.
     pub trim_trailing_whitespace: bool,
     /// Ensure a single final newline on save.
@@ -68,6 +72,13 @@ pub struct Config {
     /// Append LSP error/warning messages at the end of their line, colored by
     /// severity (red/yellow).
     pub inline_diagnostics: bool,
+    /// Use plain ASCII glyphs (e.g. "f"/"d" for new-file/new-folder) instead of
+    /// Nerd Font / Codicon Private-Use-Area icons. The latter render as tiny
+    /// fallback/placeholder glyphs in a terminal font that doesn't bundle those
+    /// codepoints — this is the escape hatch, previously only reachable via
+    /// the `CODER_ASCII` env var (still honored, and takes priority over this
+    /// persisted setting when set).
+    pub ascii_icons: bool,
     /// Language tooling, keyed by language name (the `[<name>]` section).
     pub languages: BTreeMap<String, LanguageConfig>,
 }
@@ -77,9 +88,11 @@ impl Default for Config {
         Config {
             theme: DEFAULT_THEME.to_string(),
             format_on_save: false,
+ format_on_paste: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             inline_diagnostics: true,
+            ascii_icons: false,
             // No languages by default; they live in the file (see `seed`).
             languages: BTreeMap::new(),
         }
@@ -133,9 +146,12 @@ pub fn parse(text: &str) -> Config {
     if let Some(v) = table.get("theme").and_then(Value::as_str) {
         cfg.theme = v.to_string();
     }
-    if let Some(v) = table.get("format_on_save").and_then(Value::as_bool) {
-        cfg.format_on_save = v;
-    }
+	if let Some(v) = table.get("format_on_save").and_then(Value::as_bool) {
+		cfg.format_on_save = v;
+	}
+	if let Some(v) = table.get("format_on_paste").and_then(Value::as_bool) {
+		cfg.format_on_paste = v;
+	}
     if let Some(v) = table.get("trim_trailing_whitespace").and_then(Value::as_bool) {
         cfg.trim_trailing_whitespace = v;
     }
@@ -144,6 +160,9 @@ pub fn parse(text: &str) -> Config {
     }
     if let Some(v) = table.get("inline_diagnostics").and_then(Value::as_bool) {
         cfg.inline_diagnostics = v;
+    }
+    if let Some(v) = table.get("ascii_icons").and_then(Value::as_bool) {
+        cfg.ascii_icons = v;
     }
     for (key, value) in &table {
         if SETTING_KEYS.contains(&key.as_str()) {
@@ -182,6 +201,7 @@ pub fn to_toml(config: &Config) -> String {
     let mut table = toml::Table::new();
     table.insert("theme".into(), Value::String(config.theme.clone()));
     table.insert("format_on_save".into(), Value::Boolean(config.format_on_save));
+ table.insert("format_on_paste".into(), Value::Boolean(config.format_on_paste));
     table.insert(
         "trim_trailing_whitespace".into(),
         Value::Boolean(config.trim_trailing_whitespace),
@@ -194,6 +214,7 @@ pub fn to_toml(config: &Config) -> String {
         "inline_diagnostics".into(),
         Value::Boolean(config.inline_diagnostics),
     );
+    table.insert("ascii_icons".into(), Value::Boolean(config.ascii_icons));
     for (name, lang) in &config.languages {
         if let Ok(v) = Value::try_from(lang) {
             table.insert(name.clone(), v);
@@ -267,5 +288,21 @@ mod tests {
             restored.languages["python"].extensions,
             cfg.languages["python"].extensions
         );
+    }
+
+    #[test]
+    fn ascii_icons_round_trips_through_toml() {
+        // Explicitly non-default (true), so a broken parse/write can't hide
+        // behind both sides coincidentally being `false`.
+        let mut cfg = seed();
+        cfg.ascii_icons = true;
+        let restored = parse(&to_toml(&cfg));
+        assert!(restored.ascii_icons);
+    }
+
+    #[test]
+    fn ascii_icons_parses_from_toml() {
+        let cfg = parse("ascii_icons = true\n");
+        assert!(cfg.ascii_icons);
     }
 }

@@ -11,10 +11,34 @@ use crate::ui::text_input::TextInput;
 
 use super::{list_scroll, panel_area};
 
-/// Number of fixed rows above the result list in the search panel: query,
-/// blank, replace, blank, replace buttons, blank, regex, match-case,
-/// search-hidden, count.
-const SEARCH_HEADER_ROWS: u16 = 10;
+/// One header row kind, top to bottom. Both `render` and `search_hit` walk the
+/// same `header_rows` list for the current mode, so the two can never drift
+/// apart the way two independently hand-counted row offsets could.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Query,
+    Blank,
+    /// The "[ ] Replace" checkbox that shows/hides the rows below.
+    ReplaceToggle,
+    ReplaceInput,
+    ReplaceButtons,
+    Regex,
+    MatchCase,
+    SearchHidden,
+    Count,
+}
+
+/// The header rows for the current mode. The replace input and its buttons
+/// only appear once "Replace" is toggled on — otherwise the panel stays a
+/// compact "just find" view instead of always showing replace UI up front.
+fn header_rows(replace_mode: bool) -> Vec<Row> {
+    let mut rows = vec![Row::Query, Row::Blank, Row::ReplaceToggle];
+    if replace_mode {
+        rows.extend([Row::Blank, Row::ReplaceInput, Row::Blank, Row::ReplaceButtons]);
+    }
+    rows.extend([Row::Blank, Row::Regex, Row::MatchCase, Row::SearchHidden, Row::Count]);
+    rows
+}
 
 /// Builds a two-button row (left | gap | right) sized to `width`; each cell is
 /// accent-colored when enabled, dim otherwise. Splits match `two_button_hit`.
@@ -76,39 +100,51 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
             Style::new().fg(if on { th.accent } else { th.fg_dim }),
         ))
     };
-    // The two input rows are drawn by the shared TextInput widget as an overlay
-    // (see below); reserve blank sunken rows for them here.
+    // Input rows are drawn by the shared TextInput widget as an overlay (see
+    // below); reserve a blank sunken row for them here.
     let blank_input = || Line::from(Span::styled(" ".repeat(width), Style::new().bg(th.input_bg())));
-    let mut lines: Vec<Line> = vec![
-        // 0) Search input (overlaid).
-        blank_input(),
-        Span::from("").into(),
-        // 2) Replace input (overlaid).
-        blank_input(),
-        Span::from("").into(),
-        // 4) Replace / Replace All buttons.
-        two_button_line(th, width, "Replace", has_query && has_results, "Replace All", has_query),
-        Span::from("").into(),
-        // 6) Regex checkbox (+ shortcut hint).
-        Line::from(vec![
-            Span::styled(
+
+    let rows = header_rows(s.replace_mode);
+    let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
+    // Rows of the query/replace inputs, so they can be overlaid afterward at
+    // their actual (mode-dependent) position instead of a hardcoded index.
+    let mut query_row: u16 = 0;
+    let mut replace_row: Option<u16> = None;
+    for (i, row) in rows.iter().enumerate() {
+        lines.push(match row {
+            Row::Query => {
+                query_row = i as u16;
+                blank_input()
+            }
+            Row::Blank => Span::from("").into(),
+            Row::ReplaceToggle => check(s.replace_mode, "Replace"),
+            Row::ReplaceInput => {
+                replace_row = Some(i as u16);
+                blank_input()
+            }
+            Row::ReplaceButtons => two_button_line(
+                th,
+                width,
+                "Replace",
+                has_query && has_results,
+                "Replace All",
+                has_query,
+            ),
+            Row::Regex => Line::from(Span::styled(
                 format!(" {} RegExp", if s.use_regex { "[x]" } else { "[ ]" }),
                 Style::new().fg(if s.use_regex { th.accent } else { th.fg_dim }),
-            ),
-        ]),
-        // 7) Match Case checkbox.
-        check(s.match_case, "Match Case"),
-        // 8) Search Ignored & Hidden Files checkbox.
-        check(s.search_hidden, "Search Ignored & Hidden"),
-        // 9) Result count.
-        Line::from(Span::styled(
-            format!("- {} results: -", s.results.len()),
-            Style::new().fg(th.fg_dim),
-        )),
-    ];
+            )),
+            Row::MatchCase => check(s.match_case, "Match Case"),
+            Row::SearchHidden => check(s.search_hidden, "Search Ignored & Hidden"),
+            Row::Count => Line::from(Span::styled(
+                format!("- {} results: -", s.results.len()),
+                Style::new().fg(th.fg_dim),
+            )),
+        });
+    }
 
-    // 6+) Results — two rows per hit: file path (dim + underlined), then the matched line.
-    let list_h = (area.height as usize).saturating_sub(SEARCH_HEADER_ROWS as usize);
+    // Results — two rows per hit: file path (dim + underlined), then the matched line.
+    let list_h = (area.height as usize).saturating_sub(rows.len());
     let per_page = (list_h / 2).max(1);
     let offset = list_scroll(s.selected, s.results.len(), per_page);
     for (i, m) in s.results.iter().enumerate().skip(offset).take(per_page) {
@@ -128,27 +164,30 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
     frame.render_widget(p, area);
 
-    // Overlay the query/replace inputs on their reserved rows (indices 0 and 2).
+    // Overlay the query/replace inputs on their reserved rows.
     let input_row = |dy: u16| Rect { x: area.x, y: area.y + dy, width: area.width, height: 1 };
     frame.render_widget(
         TextInput::new(&s.query, th)
             .placeholder("Find...")
             .focused(query_active)
             .pad(1),
-        input_row(0),
+        input_row(query_row),
     );
-    frame.render_widget(
-        TextInput::new(&s.replace, th)
-            .placeholder("Replace...")
-            .focused(replace_active)
-            .pad(1),
-        input_row(2),
-    );
+    if let Some(replace_row) = replace_row {
+        frame.render_widget(
+            TextInput::new(&s.replace, th)
+                .placeholder("Replace...")
+                .focused(replace_active)
+                .pad(1),
+            input_row(replace_row),
+        );
+    }
 }
 
 /// Target of a mouse click in the search panel.
 pub enum SearchHit {
     QueryField,
+    ReplaceModeToggle,
     ReplaceField,
     RegexToggle,
     MatchCaseToggle,
@@ -162,35 +201,29 @@ pub enum SearchHit {
 pub fn search_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<SearchHit> {
     let body = panel_area(area);
     let s = &model.sidebar.search;
-    let base = body.y; // first body row = the query input
-    // Body rows (see `render`): query(0), blank(1), replace(2), blank(3),
-    // replace buttons(4), blank(5), regex(6), match-case(7), search-hidden(8),
-    // count(9), then the result list (`SEARCH_HEADER_ROWS`).
-    if y == base {
-        return Some(SearchHit::QueryField);
+    let rows = header_rows(s.replace_mode);
+    let rel = y.checked_sub(body.y)?;
+
+    if let Some(row) = rows.get(rel as usize) {
+        return match row {
+            Row::Query => Some(SearchHit::QueryField),
+            Row::ReplaceToggle => Some(SearchHit::ReplaceModeToggle),
+            Row::ReplaceInput => Some(SearchHit::ReplaceField),
+            Row::ReplaceButtons => two_button_hit(body.x, body.width, x)
+                .map(|right| if right { SearchHit::ReplaceAll } else { SearchHit::ReplaceOne }),
+            Row::Regex => Some(SearchHit::RegexToggle),
+            Row::MatchCase => Some(SearchHit::MatchCaseToggle),
+            Row::SearchHidden => Some(SearchHit::SearchHiddenToggle),
+            Row::Blank | Row::Count => None,
+        };
     }
-    if y == base + 2 {
-        return Some(SearchHit::ReplaceField);
-    }
-    if y == base + 4 {
-        return two_button_hit(body.x, body.width, x)
-            .map(|right| if right { SearchHit::ReplaceAll } else { SearchHit::ReplaceOne });
-    }
-    if y == base + 6 {
-        return Some(SearchHit::RegexToggle);
-    }
-    if y == base + 7 {
-        return Some(SearchHit::MatchCaseToggle);
-    }
-    if y == base + 8 {
-        return Some(SearchHit::SearchHiddenToggle);
-    }
-    let start = base + SEARCH_HEADER_ROWS;
+
+    // Past the header: the result list, two rows per hit.
+    let start = body.y + rows.len() as u16;
     if y < start {
         return None;
     }
-    // Two rows per result: file path then matched line.
-    let list_h = body.height.saturating_sub(SEARCH_HEADER_ROWS) as usize;
+    let list_h = body.height.saturating_sub(rows.len() as u16) as usize;
     let per_page = (list_h / 2).max(1);
     let offset = list_scroll(s.selected, s.results.len(), per_page);
     let idx = offset + ((y - start) / 2) as usize;
@@ -198,5 +231,45 @@ pub fn search_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<SearchHit
         Some(SearchHit::Result(idx))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_is_compact_without_replace_mode() {
+        let off = header_rows(false);
+        let on = header_rows(true);
+        assert!(!off.contains(&Row::ReplaceInput));
+        assert!(!off.contains(&Row::ReplaceButtons));
+        assert!(on.contains(&Row::ReplaceInput));
+        assert!(on.contains(&Row::ReplaceButtons));
+        assert!(on.len() > off.len(), "replace mode adds rows, never removes any");
+    }
+
+    #[test]
+    fn every_row_kind_appears_exactly_once_per_mode() {
+        // Regression guard: `render` and `search_hit` both derive their offsets
+        // from this same list, so a duplicated/missing row would misalign one
+        // against the other. Every kind except `Blank` is unique per row.
+        for replace_mode in [false, true] {
+            let rows = header_rows(replace_mode);
+            for kind in [
+                Row::Query,
+                Row::ReplaceToggle,
+                Row::Regex,
+                Row::MatchCase,
+                Row::SearchHidden,
+                Row::Count,
+            ] {
+                assert_eq!(
+                    rows.iter().filter(|r| **r == kind).count(),
+                    1,
+                    "mode={replace_mode}"
+                );
+            }
+        }
     }
 }

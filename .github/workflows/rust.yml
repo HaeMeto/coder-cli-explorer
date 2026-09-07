@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch: {}
 
 jobs:
   # Build .deb / .rpm inside a Debian 12 (bookworm) container so the produced
@@ -21,7 +22,12 @@ jobs:
 
       - name: Set the release version
         shell: bash
-        run: echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install system dependencies
         run: |
@@ -55,6 +61,7 @@ jobs:
           fi
 
       - name: Generate a changelog
+        if: startsWith(github.ref, 'refs/tags/')
         uses: orhun/git-cliff-action@v4
         id: git-cliff
         with:
@@ -63,6 +70,7 @@ jobs:
           OUTPUT: CHANGES.md
 
       - name: Upload the .deb / .rpm releases
+        if: startsWith(github.ref, 'refs/tags/')
         uses: svenstaro/upload-release-action@v2
         with:
           file: release/coder-${{ env.RELEASE_VERSION }}-x86_64-unknown-linux-gnu.*
@@ -95,7 +103,12 @@ jobs:
           - OS: macos-14
             TOOLCHAIN: stable
             TARGET: aarch64-apple-darwin
-          - OS: macos-13
+          # macos-13 (the last Intel-hosted runner image) was fully retired
+          # by GitHub on 2025-12-08 -- see
+          # https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/
+          # so the Intel binary is now cross-compiled from an Apple Silicon
+          # runner instead (Xcode's linker supports both targets natively).
+          - OS: macos-14
             TOOLCHAIN: stable
             TARGET: x86_64-apple-darwin
     steps:
@@ -104,7 +117,12 @@ jobs:
 
       - name: Set the release version
         shell: bash
-        run: echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -135,6 +153,27 @@ jobs:
           fi
           cp README.md LICENSE* coder-${{ env.RELEASE_VERSION }}/ 2>/dev/null || true
 
+      - name: Copy the standalone .exe (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp target/${{ matrix.build.TARGET }}/release/coder.exe coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.exe
+
+      - name: Install cargo-wix (Windows only, builds the .msi installer)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo install cargo-wix --locked
+
+      - name: Build the .msi installer (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo wix \
+            --no-build \
+            --target ${{ matrix.build.TARGET }} \
+            --target-bin-dir target/${{ matrix.build.TARGET }}/release \
+            --nocapture \
+            --output coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.msi
+
       - name: Create release artifacts
         shell: bash
         run: |
@@ -147,6 +186,7 @@ jobs:
           fi
 
       - name: Upload the binary releases
+        if: startsWith(github.ref, 'refs/tags/')
         uses: svenstaro/upload-release-action@v2
         with:
           file: coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}*
@@ -168,7 +208,12 @@ jobs:
 
       - name: Set the release version
         shell: bash
-        run: echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install musl toolchain
         run: |
@@ -203,6 +248,7 @@ jobs:
             > coder-${{ env.RELEASE_VERSION }}-x86_64-unknown-linux-musl.tar.gz.sha512
 
       - name: Upload the musl release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: svenstaro/upload-release-action@v2
         with:
           file: coder-${{ env.RELEASE_VERSION }}-x86_64-unknown-linux-musl.*

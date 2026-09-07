@@ -16,6 +16,9 @@ pub struct DialogLayout {
     pub input: Option<Rect>,
     pub confirm: Rect,
     pub cancel: Option<Rect>,
+    /// Third button (`AskSave`'s "Cancel", to the right of "Don't Save"). `None`
+    /// for every other dialog kind.
+    pub third: Option<Rect>,
 }
 
 /// Centered modal rectangle.
@@ -31,13 +34,20 @@ fn dialog_area(d: &Dialog, term: Rect) -> Rect {
     Rect { x, y, width: w, height: h }
 }
 
-/// (confirm label, cancel label) — None if there is no cancel.
+/// (confirm label, cancel label) — None if there is no cancel. Not called for
+/// `AskSave`, which has its own three-label helper below.
 fn button_labels(kind: DialogKind) -> (&'static str, Option<&'static str>) {
     match kind {
         DialogKind::Ask => ("Yes", Some("No")),
         DialogKind::Info => ("OK", None),
         DialogKind::Input => ("OK", Some("Cancel")),
+        DialogKind::AskSave => unreachable!("AskSave uses ask_save_labels"),
     }
+}
+
+/// (Save, Don't Save, Cancel) — `AskSave`'s three buttons, left to right.
+fn ask_save_labels() -> (&'static str, &'static str, &'static str) {
+    ("Save", "Don't Save", "Cancel")
 }
 
 fn btn_w(label: &str) -> u16 {
@@ -73,9 +83,29 @@ pub fn layout(d: &Dialog, term: Rect) -> DialogLayout {
         height: msg_bottom.saturating_sub(msg_y),
     };
 
+    let right = area.x + area.width.saturating_sub(2);
+
+    if d.kind == DialogKind::AskSave {
+        // Three buttons, right to left: Cancel (the escape hatch, rightmost —
+        // same convention as the two-button dialogs' "No"/"Cancel"), then
+        // Don't Save, then Save.
+        let (save_l, dont_l, cancel_l) = ask_save_labels();
+        let (save_w, dont_w, cancel_w) = (btn_w(save_l), btn_w(dont_l), btn_w(cancel_l));
+        let cancel_rect = Rect { x: right.saturating_sub(cancel_w), y: buttons_y, width: cancel_w, height: 1 };
+        let dont_rect = Rect { x: cancel_rect.x.saturating_sub(1 + dont_w), y: buttons_y, width: dont_w, height: 1 };
+        let save_rect = Rect { x: dont_rect.x.saturating_sub(1 + save_w), y: buttons_y, width: save_w, height: 1 };
+        return DialogLayout {
+            area,
+            message,
+            input,
+            confirm: save_rect,
+            cancel: Some(dont_rect),
+            third: Some(cancel_rect),
+        };
+    }
+
     let (c_label, x_label) = button_labels(d.kind);
     let cw = btn_w(c_label);
-    let right = area.x + area.width.saturating_sub(2);
     let (confirm, cancel) = if let Some(xl) = x_label {
         let xw = btn_w(xl);
         let cancel_rect = Rect {
@@ -109,6 +139,7 @@ pub fn layout(d: &Dialog, term: Rect) -> DialogLayout {
         input,
         confirm,
         cancel,
+        third: None,
     }
 }
 
@@ -141,6 +172,17 @@ pub fn render(frame: &mut Frame, model: &Model) {
         );
     }
 
+    if d.kind == DialogKind::AskSave {
+        let (save_l, dont_l, cancel_l) = ask_save_labels();
+        render_button(frame, l.confirm, save_l, d.selected == 0, th);
+        if let Some(rect) = l.cancel {
+            render_button(frame, rect, dont_l, d.selected == 1, th);
+        }
+        if let Some(rect) = l.third {
+            render_button(frame, rect, cancel_l, d.selected == 2, th);
+        }
+        return;
+    }
     let (c_label, x_label) = button_labels(d.kind);
     render_button(frame, l.confirm, c_label, d.selected == 0, th);
     if let (Some(rect), Some(label)) = (l.cancel, x_label) {
@@ -171,16 +213,22 @@ fn rect_contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
-/// Converts a mouse click into a button target: Some(true)=confirm, Some(false)=cancel.
-pub fn hit(d: &Dialog, term: Rect, x: u16, y: u16) -> Option<bool> {
+/// Converts a mouse click into a button index: 0 = confirm, 1 = cancel (when
+/// present), 2 = the third `AskSave` button ("Cancel"), if any.
+pub fn hit(d: &Dialog, term: Rect, x: u16, y: u16) -> Option<usize> {
     let l = layout(d, term);
     if rect_contains(l.confirm, x, y) {
-        return Some(true);
+        return Some(0);
     }
     if let Some(rect) = l.cancel
         && rect_contains(rect, x, y)
     {
-        return Some(false);
+        return Some(1);
+    }
+    if let Some(rect) = l.third
+        && rect_contains(rect, x, y)
+    {
+        return Some(2);
     }
     None
 }
