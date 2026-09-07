@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "Lightweight Terminal IDE like VSCode. Supports mouse clicks, git, autocomplete, LSP and more."
 repository = "https://github.com/eminfedar/coder"
-authors = ["Emin Fedar <eminfedar@gmail.com>"]
+authors = ["Emin Fedar <eminfedar@gmail.com>", "HaeMeto <HaeMeto@users.noreply.github.com>"]
 
 [profile.release]
 strip = true # Automatically strip symbols from the binary.
