@@ -167,7 +167,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          cargo wix build \
+          cargo wix \
             --no-build \
             --target ${{ matrix.build.TARGET }} \
             --target-bin-dir target/${{ matrix.build.TARGET }}/release \
