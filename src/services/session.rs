@@ -107,13 +107,38 @@ pub struct Hunk {
     pub new_text: String,
 }
 
-/// Stable key for `root`, tolerant of a same-filesystem rename: the directory's
-/// `(dev, ino)`, which `rename(2)` never changes. `None` if `root` can't be
-/// `stat`-ed (already gone).
+/// Stable key for `root`, tolerant of a same-filesystem rename: on Unix the
+/// directory's `(dev, ino)`, which `rename(2)` never changes; on Windows the
+/// equivalent `(volume_serial_number, file_index)` pair, which a same-volume
+/// `MoveFile` likewise preserves. `None` if `root` can't be `stat`-ed (already
+/// gone) or, on Windows, if the filesystem doesn't report a file index (e.g.
+/// some FAT volumes).
 pub fn root_key(root: &Path) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(root).ok()?;
-    Some(format!("{:x}-{:x}", meta.dev(), meta.ino()))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(root).ok()?;
+        Some(format!("{:x}-{:x}", meta.dev(), meta.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let meta = std::fs::metadata(root).ok()?;
+        Some(format!("{:x}-{:x}", meta.volume_serial_number()?, meta.file_index()?))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // No stable inode-equivalent available: fall back to the canonicalized
+        // path itself, which loses rename-tolerance but still keys sessions
+        // consistently per workspace.
+        let canon = std::fs::canonicalize(root).ok()?;
+        Some(format!("{:x}", {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            canon.hash(&mut h);
+            h.finish()
+        }))
+    }
 }
 
 /// Base directory for session files: `$CODER_SESSION_DIR`, else alongside
