@@ -153,6 +153,27 @@ jobs:
           fi
           cp README.md LICENSE* coder-${{ env.RELEASE_VERSION }}/ 2>/dev/null || true
 
+      - name: Copy the standalone .exe (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp target/${{ matrix.build.TARGET }}/release/coder.exe coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.exe
+
+      - name: Install cargo-wix (Windows only, builds the .msi installer)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo install cargo-wix --locked
+
+      - name: Build the .msi installer (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo wix build \
+            --no-build \
+            --target ${{ matrix.build.TARGET }} \
+            --target-bin-dir target/${{ matrix.build.TARGET }}/release \
+            --nocapture \
+            --output coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.msi
+
       - name: Create release artifacts
         shell: bash
         run: |
