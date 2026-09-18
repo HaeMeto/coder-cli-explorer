@@ -37,13 +37,58 @@ It starts instantly and uses very little memory.
 
 ## Install
 
-Build from source (needs Rust):
+### From source
+
+Clone the maintained repository and build it with Rust:
 
 ```bash
-git clone https://github.com/eminfedar/coder
-cd coder
+git clone https://github.com/HaeMeto/coder-cli-explorer.git
+cd coder-cli-explorer
 cargo install --path .
 ```
+
+To upgrade an existing source installation:
+
+```bash
+cd coder-cli-explorer
+git pull --ff-only
+cargo install --path . --force
+```
+
+### From a release
+
+Prebuilt binaries and installers are available on the
+[GitHub Releases page](https://github.com/HaeMeto/coder-cli-explorer/releases).
+The commands below download release `v0.1.3`; replace `VERSION` with another
+release tag when needed.
+
+Linux x86_64 (`.tar.gz`):
+
+```bash
+VERSION=v0.1.3
+curl -fL -o "coder-${VERSION}.tar.gz" \
+  "https://github.com/HaeMeto/coder-cli-explorer/releases/download/${VERSION}/coder-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+tar -xzf "coder-${VERSION}.tar.gz"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "coder-${VERSION}/coder" "$HOME/.local/bin/coder"
+```
+
+Linux packages (`.deb` / `.rpm`) can be downloaded from the same release and
+installed with the system package manager:
+
+```bash
+# Debian/Ubuntu
+sudo apt install ./coder-v0.1.3-x86_64-unknown-linux-gnu.deb
+
+# Fedora/RHEL/openSUSE
+sudo dnf install ./coder-v0.1.3-x86_64-unknown-linux-gnu.rpm
+```
+
+For macOS and Windows, download the archive or installer matching your
+architecture from the release page. macOS assets use
+`aarch64-apple-darwin` or `x86_64-apple-darwin`; Windows assets use
+`x86_64-pc-windows-msvc` or `aarch64-pc-windows-msvc` and include `.zip`,
+`.exe`, and `.msi` variants.
 
 Icons use a Nerd Font. If your terminal font has none, run with `CODER_ASCII=1`.
 
