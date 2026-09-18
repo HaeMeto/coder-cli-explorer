@@ -10,6 +10,9 @@ Mouse clicks, git, autocomplete, LSP, themes and an embedded terminal — all in
 
 Written in Rust with [ratatui](https://ratatui.rs).
 
+This repository is a maintained fork of [eminfedar/coder](https://github.com/eminfedar/coder),
+with additional upgrades and release packages for this fork.
+
 <img src="assets/screenshot.png" alt="coder screenshot">
 
 </div>
